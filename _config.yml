@@ -1,7 +1,7 @@
 title: Jared Callaham
 author:
   name: Jared Callaham
-  email: jared.callaham@gmail.com
+  # email: jared.callaham@gmail.com
 
 # The `>` after `description:` means to ignore line-breaks until next key.
 # If you want to omit the line-break after the end of text, use `>-` instead.
@@ -15,7 +15,7 @@ markdown: kramdown
 theme: minima
 
 plugins:
-  - jekyll-feed
+  # - jekyll-feed
   - jekyll-seo-tag
 
 # Theme-specific settings
@@ -37,7 +37,7 @@ minima:
     - { platform: google_scholar, user_url: "https://scholar.google.com/citations?user=THaf6_0AAAAJ&hl=en" }
   #   - { platform: instagram,      user_url: "https://www.instagram.com/jekyll" }
   #   - { platform: keybase,        user_url: "https://keybase.io/jekyll" }
-  #   - { platform: linkedin,       user_url: "https://www.linkedin.com/in/jekyll" }
+    - { platform: linkedin,       user_url: "https://www.linkedin.com/in/jcallaham" }
   #   - { platform: microdotblog,   user_url: "https://micro.blog/jekyll" }
   #   - { platform: pinterest,      user_url: "https://www.pinterest.com/jekyll" }
   #   - { platform: stackoverflow,  user_url: "https://stackoverflow.com/users/1234567/jekyll" }
