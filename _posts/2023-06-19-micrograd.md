@@ -9,26 +9,26 @@ tags:
   - autodiff
 ---
 
-I'm working on a couple of posts about differentiable simulation and optimal control, and I wanted to use Andrej Karpathy's [micrograd](https://github.com/karpathy/micrograd) implementation of reverse-mode automatic differentiation as a starting point. However, I realized there were a couple of things I wanted to add:
+I'm working on a couple of posts about differentiable simulation and optimal control, and I wanted to use Andrej Karpathy's [micrograd](https://github.com/karpathy/micrograd) implementation of reverse-mode automatic differentiation as a starting point. However, I realized there were a couple of things I'd need to add:
 
-1. A vector data structure
-2. Support for a few more basic math operations
-3. A functional interface similar to JAX and functorch, or at least vector-Jacobian products ([`vjp`](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html#vector-jacobian-products-vjps-aka-reverse-mode-autodiff))
+1. A vector data structure and support for AD with vector-valued functions
+2. A functional interface similar to JAX and functorch
+3. Support for a few more basic math operations
 
 
 I decided to write this up as a separate post because I thought that it sheds a little more light on some reverse-mode AD mechanics that are useful for applications beyond standard machine learning training.
 
-I'm not going to derive "backprop" or reverse-mode AD from scratch here; if you haven't seen the [video](https://youtu.be/VMj-3S1tku0) or looked through the [code](https://github.com/karpathy/micrograd), I highly recommend it.  [Here's](https://thenumb.at/Autodiff/) another great intro blog post on automatic differentiation.  For background on the JAX-type interface, check out the "[autodiff cookbook](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html#how-it-s-made-two-foundational-autodiff-functions)" page of their documentation.
+I'm not going to derive "backprop" or reverse-mode AD from scratch here; if you haven't seen the [video](https://youtu.be/VMj-3S1tku0) or looked through the [code](https://github.com/karpathy/micrograd), I highly recommend it.  [Here's](https://thenumb.at/Autodiff/) another great intro blog post on automatic differentiation.  For background on the JAX functional interface, check out the "[autodiff cookbook](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html#how-it-s-made-two-foundational-autodiff-functions)" page of their documentation.
 
-The code is available on [my fork](https://github.com/jcallaham/micrograd) of Micrograd (which currently doesn't have the `nn` module, but I'll add that back when I have time).
+The code is available on [my fork](https://github.com/jcallaham/micrograd) of micrograd (which currently doesn't have the `nn` module, but I'll add that back when I have time).
 
 ### What is micrograd and why am I using it?
 
 Micrograd is a minimal implementation of reverse-mode automatic differentiation, using an interface inspired by PyTorch.  There is a scalar `Value` data structure that can be differentiated over a small number of math operations, and a `micrograd.nn` module that has some basic tools for building neural nets.  
 
-As far as I know, it was never intended to be used for any actual machine learning. PyTorch, Tensorflow, JAX, and other industrial-grade libraries are very highly optimized.  But the tradeoff is that it's not always easy to look at the source code and understand the principles behind it.  The beauty of micrograd is that it is as simple as possible so that you can really understand how backpropagation works by just reading the source code.  Personally, I learned a lot from it and I think it's a great way to show how something works in a way that also inspires hacking on it.  That's why I wanted to use it for this project.  While there are certainly more powerful libraries out there, it's hard to beat as a tool for explanation, just because of how easy it is to see exactly what is happening in the code.
+As far as I know, it was never intended to be used for any actual machine learning. PyTorch, Tensorflow, JAX, and other industrial-grade libraries are very highly optimized and there's no point in trying to build your own from scratch.  But the tradeoff is that it's not always easy to look at the source code and understand the principles behind it.  The beauty of micrograd is that it is as simple as possible so that you can really understand how backpropagation works by just reading the source code.  Personally, I learned a lot from it and I think it's a great way to show how something works in a way that also inspires hacking on it.
 
-
+<!-- That's why I wanted to use it for this project.  While there are certainly more powerful libraries out there, it's hard to beat as a tool for explanation, just because of how easy it is to see exactly what is happening in the code. -->
 
 <!-- As such, it doesn't have the features I listed above because (1) they would add lines of code and (2) they aren't necessary to show how backprop works.  I wanted to use it for this project because  -->
 
@@ -156,22 +156,16 @@ That's pretty much all there is to it. But again, I strongly recommend looking t
 Before launching into the modifications to the code, there's one important piece of mathematical background.  The standard case in machine learning is that we have some large number of trainable parameters (weights/biases) and one scalar output (loss).  Specifically,
 
 $$
-y = f(\mathbf{x}), \qquad x \in \mathbb{R}^n, ~ y \in \mathbb{R},
+y = f(\mathbf{x}), \qquad \mathbf{x} \in \mathbb{R}^n, ~ y \in \mathbb{R},
 $$
 
 where $\mathbf{x}$ are our trainable parameters and $y$ is the loss function.  Here $f$ might include an evaluation over some number of training points, but from an optimization perspective it's really a function of the parameters.
 
-In order to minimize the loss, we use some flavor of gradient descent.  At each step the current parameters $\mathbf{x}_0$ are updated by taking a step in the direction of the negative gradient of the loss with respect to the parameters, evaluated at the current set of parameters:
-
-$$
-\nabla f(\mathbf{x}_0),
-$$
-
-which is an $n$-dimensional vector.
+In order to minimize the loss, we use some variation of gradient descent.  At each step the current parameters $\mathbf{x}_0$ are updated by taking a step in the direction of the negative gradient of the loss with respect to the parameters, evaluated at the current set of parameters.  This is written $ \nabla f(\mathbf{x}_0)$, which is an $n$-dimensional vector.
 
 The "forward" approach to estimating this gradient using either finite differencing or forward-mode AD involves perturbing all $n$ inputs independently.  On the other hand, reverse-mode AD is very efficient in this setting: as you evaluate $f(\mathbf{x})$ you build up a "computational graph" representing the operations involved in evaluating the function.  Then a _single_ "backward" pass can build up the gradient with respect to all $n$ inputs. Again, there are great resources that explain this in more detail, so I won't do it here.
 
-The important thing here is what happens in the case where the output isn't a scalar, but a vector $\mathbf{y}\in \mathbb{R}^m$. Just like forward-mode AD requires one pass for each input, reverse-mode AD requires one pass for each _output_.  This is very convenient in the machine learning training context, but the difference in efficieny tends to evaporate when $n$ and $m$ are comparable in size.
+The important thing here is what happens in the case where the output isn't a scalar, but a vector $\mathbf{y}\in \mathbb{R}^m$. Just like forward-mode AD acts like a perturbation to the input, reverse-mode AD acts like a perturbation to the _output_.  This is very convenient in the machine learning training context, but the difference in efficieny tends to evaporate when $n$ and $m$ are comparable in size.
 
 The generalization of the gradient to vector-valued functions is the $m \times n$ _Jacobian_ matrix $J(\mathbf{x}_0)$:
 
@@ -184,7 +178,7 @@ J(\mathbf{x}_0) = \left.  \frac{dy}{dx}\right|_{\mathbf{x}=\mathbf{x}_0}
 \end{bmatrix} \right|_{\mathbf{x}=\mathbf{x}_0}
 $$
 
-If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass.  On the other hand, forward-mode AD computes a column of the Jacobian in each pass.
+If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass (but we'll see what it's _really_ doing in a minute).  On the other hand, forward-mode AD can be seen as computing a column of the Jacobian in each pass.
 
 As a simple example, let's say $\mathbf{f}$ is a vector-valued function given by
 
@@ -212,7 +206,7 @@ Note that the Jacobian of a vector-valued function is really a _matrix_-valued f
 ### The vector-Jacobian product
 
 How does this work numerically?  Notice in the micrograd code that the backward pass is "seeded" by [initializing the `grad` variable to 1](https://github.com/karpathy/micrograd/blob/c911406e5ace8742e5841a7e0df113ecb5d54685/micrograd/engine.py#L68).
-If the function is vector-valued, so too is this `grad` variable, and we still have to seed it with some vector $\mathbf{v} \in \mathbb{R}^m$.  In PyTorch, this is what's happening when you pass the `gradient` kwarg to `Tensor.backward`.  So, how do we choose $\mathbf{v}$?
+If the function is vector-valued, so too is this `grad` variable, and we still have to seed it with some vector $\mathbf{v} \in \mathbb{R}^m$.  In PyTorch, this is what's happening when you pass the `gradient` kwarg to `Tensor.backward`, which is required when the `Tensor` isn't scalar-valued.  So, how do we choose $\mathbf{v}$?
 
 The simplest case is if we use a "basis" vector $\mathbf{e}_k$ that is zero except in the $k$-th entry.  For instance, if $k=1$,
 
@@ -252,7 +246,7 @@ $$
 \mathbf{v}^T J(\mathbf{x}_0) = v_1 \mathbf{e}_1^T J(\mathbf{x}_0) + v_2 \mathbf{e}_2^T J(\mathbf{x}_0)
 $$
 
-In other words, a single backwards pass with seed vector $\mathbf{v}$ computes this vector-Jacobian product, _without_ ever having to build the Jacobian.  If $m$ and/or $n$ are large, this can be a huge computational savings.
+In other words, a single backwards pass with seed vector $\mathbf{v}$ computes this vector-Jacobian product, without ever having to build the full Jacobian.  If $m$ and/or $n$ are large, this can be a huge computational savings.
 
 Still, at this point it's probably not obvious why this would be useful.  Under what circumstances do we need to take derivatives of vector-valued functions?  And even then, why would we only want to compute a vector-matrix (not even matrix-vector!) product?  I'll get into this more in future posts on adjoint methods.  For now I just wanted to show enough of the mechanics of reverse-mode AD with vector-valued functions to get into the code.
 
@@ -291,7 +285,7 @@ So far this is almost identical to the original, but uses NumPy arrays to store 
         return out
 ```
 
-I did slightly change how the case of `other` not being an array is handled.  In the original micrograd, everything is converted to a `Value` and then gradients are accumulated to all `Value`s.  This doesn't quite work with implicit array broadcasting, for instance if we wanted to do something like `Array([1.0, 2.0]) + 3.0`.  We can (and do) convert `3.0` into an array, but it and its `grad` are scalar-valued, while `self` and `out` are both length-2 vectors.  If we tried to accumulate to `other.grad` we'd get a shape mismatch.  Instead, the overloaded operators here support broadcasting by only accumulating gradients to `other` _if_ it is an `Array`.
+I did slightly change how the case of `other` not being an array is handled.  In the original micrograd, everything is converted to a `Value` and then gradients are accumulated to all `Value`s.  This doesn't quite work with implicit array broadcasting, for instance if we wanted to do something like `Array([1.0, 2.0]) + 3.0`.  We can (and do) convert `3.0` into an array, but it and its `grad` are scalar-valued, while `self` and `out` are both length-2 vectors.  If we tried to accumulate to `other.grad` we'd get a shape mismatch.  Instead, the overloaded operators here support broadcasting by accumulating gradients to `other` if and only if it is an `Array`.
 
 Since we're working with arrays, we should also support indexing.  On the "get" side this is easy:
 
@@ -351,6 +345,8 @@ The last method we have to deal with is `backward`.  But once again, this is fai
             v._backward()
 ```
 
+With a little extra work, we could also have the `.grad` attribute be an `Array`, which would track its own gradients and allow higher-order derivatives (i.e. Hessians). It's enough of a change that I'm not going to do it here, but see [this discussion](https://github.com/karpathy/micrograd/pull/8) on the micrograd repo.
+
 Finally, it would be nice to have a convenient way to create `Array` objects from different data structures, just as `numpy.array` creates `ndarray` objects and `torch.tensor` creates `Tensor` objects.  So let's define an `array(x)` function that creates a new `Array` depending on what `x` is.  There are really only three important cases here:
 
 1. `x` is an Array: don't need to create anything
@@ -391,6 +387,131 @@ def _(x: Union[list, tuple]):
 
 That's it!  With these minor changes we have support for arrays in micrograd.
 
-### 2. More math
+### 2. Functional interface
 
-### 3. Functional interface
+With the understanding of reverse-mode AD as a vector-Jacobian product, we can easily build up an approximation of some of the functional programming features of JAX and PyTorch.
+
+Let's start with the basic [`vjp`](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html#vector-jacobian-products-vjps-aka-reverse-mode-autodiff).  We already know that we can calculate the vector-Jacobian product by calling `.backward()` with a seed vector `v`.  Assuming the function we want to differentiate has a single input and single output, `vjp` can be implemented in just a few lines:
+
+```python
+def vjp(f, x, v):
+    """Vector-Jacobian product for vector-valued function"""
+    y = f(x)
+    y.backward(gradient=v)
+    return x.grad
+```
+
+To compute the Jacobian, we can just repeat this process for each output to build up the Jacobian row-by-row.
+
+```python
+def jac(f):
+    """Jacobian of a vector-valued function"""
+    def _jac(*args, **kwargs):
+        assert len(args) == 1 and isinstance(args[0], Array), "Only single-input functions supported"
+        x = args[0]
+
+        y = f(*args, **kwargs) # forward pass (return an array)
+        assert isinstance(y, Array), "Only single-output functions supported"
+
+        J = np.zeros((len(y.data), len(x.data)))
+        for k in range(len(y.data)):
+            # For each output, do a backward pass
+
+            e = np.zeros_like(y.data)
+            e[k] = 1.0  # Unit basis vector 
+
+            y.zero_grad()  # Reset the gradients to do a new backwards pass
+
+            y.backward(gradient=e)  # Seed the backwards pass with the basis vector
+            J[k, :] = x.grad
+        return J
+    _jac.__name__ = f"grad({f.__name__})"
+    return _jac
+```
+
+Note that for functions with large inputs and/or outputs, this becomes very expensive, both in storage and computation.  If possible, it's much better to use the direct evaluations like `vjp` (and `jvp`, if we had forward-mode autodiff).  With those two functions you can also create objects like [`LinearOperator`](https://docs.scipy.org/doc/scipy/reference/generated/scipy.sparse.linalg.LinearOperator.html) in SciPy that act like matrices for all intents and purposes but never actually explicitly compute and store the full representation.  [Matrix-free linear algebra](https://docs.scipy.org/doc/scipy/reference/sparse.linalg.html) like Krylov methods will never know the difference.
+
+### 3. More math
+
+Finally, let's add a few more math functions.  I think a thorough explanation of how to compute reverse-mode AD rules for more complicated functions is worth its own post (see [this StackExchange question](https://stats.stackexchange.com/questions/504997/reverse-mode-automatic-differentiation-with-respect-to-a-matrix-how-to-matrix/619361#619361) in the meantime), so here I'll just do a few basic operations like NumPy ufuncs to give the flavor.
+
+```python
+def relu(x):
+    out = Array(np.where(x.data < 0, 0, x.data), (x,), 'ReLU')
+
+    def _backward():
+        x.grad += (out.data > 0) * out.grad
+    out._backward = _backward
+
+    return out
+
+def tanh(x):
+    out = Array(np.tanh(x.data), (x,), 'tanh')
+
+    def _backward():
+        x.grad += (1 - out.data**2) * out.grad
+    out._backward = _backward
+
+    return out
+
+def sin(x):
+    out = Array(np.sin(x.data), (x,), 'sin')
+
+    def _backward():
+        x.grad += np.cos(x.data) * out.grad
+    out._backward = _backward
+
+    return out
+
+def cos(x):
+    out = Array(np.cos(x.data), (x,), 'cos')
+
+    def _backward():
+        x.grad += -np.sin(x.data) * out.grad
+    out._backward = _backward
+
+    return out
+
+def tan(x):
+    out = Array(np.tan(x.data), (x,), 'tan')
+
+    def _backward():
+        x.grad += (1 / np.cos(x.data)**2) * out.grad
+    out._backward = _backward
+
+    return out
+
+def exp(x):
+    out = Array(np.exp(x.data), (x,), 'exp')
+
+    def _backward():
+        x.grad += np.exp(x.data) * out.grad
+    out._backward = _backward
+
+    return out
+
+def log(x):
+    out = Array(np.log(x.data), (x,), 'log')
+
+    def _backward():
+        x.grad += (1 / x.data) * out.grad
+    out._backward = _backward
+
+    return out
+
+def dot(x, y):
+    out = Array(np.dot(x.data, y.data), (x, y), 'dot')
+
+    def _backward():
+        x.grad += np.dot(out.grad, y.data.T)
+        y.grad += np.dot(x.data.T, out.grad)
+    out._backward = _backward
+
+    return out
+```
+
+### Summary
+
+Now we have support for vector-valued functions in micrograd!  It did take adding a bit of complexity to the code and going a little deeper into the math of reverse-mode autodiff, but my hope is that working through that and seeing it in code will help build some intuition for what these systems are doing, and how to use them efficiently.
+
+Of course, there are still a million things you could add into this code.  If you feel like exploring for learning purposes, I hope you [pull the code](https://github.com/jcallaham/micrograd/tree/master) and find it a useful starting point.  But as with the original micrograd, if you're actually using autodiff for something you should use a real library - my favorites are PyTorch, JAX, and CasADi.
