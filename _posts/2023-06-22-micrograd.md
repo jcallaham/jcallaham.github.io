@@ -178,7 +178,7 @@ J(\mathbf{x}_0) = \left.  \frac{dy}{dx}\right|_{\mathbf{x}=\mathbf{x}_0}
 \end{bmatrix} \right|_{\mathbf{x}=\mathbf{x}_0}
 $$
 
-If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass (but we'll see what it's _really_ doing in a minute).  On the other hand, forward-mode AD can be seen as computing a column of the Jacobian in each pass.
+If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass (but we'll see what it's really doing in a minute).  On the other hand, forward-mode AD can be seen as computing a column of the Jacobian in each pass.
 
 As a simple example, let's say $\mathbf{f}$ is a vector-valued function given by
 
