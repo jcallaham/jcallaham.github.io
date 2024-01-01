@@ -155,7 +155,32 @@ This means that the forward-mode rule for some primitive function can be impleme
 
 **As the implementer of the pushforward (Jacobian-vector product), you can expect to be handed a seed vector (an element of the input space) along with the nominal input values and your job is to calculate the pushforward (returning an element of the output space)**.
 
-<!-- TODO: JAX example for pushforward -->
+Here's a simple example from the [JAX documentation](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-jvps-with-jax-custom-jvp) deriving the pushforward (JVP) for the function $f(x, y) = \sin(x) + y$.
+Since this is basically a scalar function (you don't have to worry too much about broadcasting, ufuncs, etc in JAX), it's easy to calculate the derivatives with basic calculus.
+Note that the pushforward is basically the total derivative: if $z = f(x, y)$, the value `tangent_out` is $\dot{z}$, where
+
+$$
+\dot{z} = \frac{\partial f}{\partial x} \dot{x} + \frac{\partial f}{\partial y} \dot{y}.
+$$
+
+We'll explain that and build on it further later, for now just take a quick look at the code to get a feel for the structure -- maybe you can recognize some of the pieces we've already talked about.
+
+```python
+import jax.numpy as jnp
+from jax import custom_jvp
+
+@custom_jvp
+def f(x, y):
+  return jnp.sin(x) * y
+
+@f.defjvp
+def f_jvp(primals, tangents):
+  x, y = primals
+  x_dot, y_dot = tangents
+  primal_out = f(x, y)
+  tangent_out = jnp.cos(x) * x_dot * y + jnp.sin(x) * y_dot
+  return primal_out, tangent_out
+```
 
 #### Reverse mode
 
@@ -185,7 +210,27 @@ Note that the full "forward pass" happens _first_, storing intermediate results,
 
 Again, your custom function will happen somewhere in this process. **As the implementer of the pullback (vector-Jacobian product), you will implement one stage of the backwards pass: you can expect to be handed an adjoint vector (an element of the output space) along with the nominal input/output values and your job is to calculate the pullback (returning an element of the input space)**.
 
-<!-- TODO: JAX example for pullback -->
+Here's the same example as before from the [JAX docs](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-vjps-with-jax-custom-vjp), but this time implementing the VJP.
+As before, it's easy to calculate these derivatives by hand.
+But this time note that what gets returned is the gradient of the output evaluated at the nominal values, scaled by the adjoint value `g`:
+
+```python
+from jax import custom_vjp
+
+@custom_vjp
+def f(x, y):
+  return jnp.sin(x) * y
+
+def f_fwd(x, y):
+# Returns primal output and residuals to be used in backward pass by f_bwd.
+  return f(x, y), (jnp.cos(x), jnp.sin(x), y)
+
+def f_bwd(res, g):
+  cos_x, sin_x, y = res # Gets residuals computed in f_fwd
+  return (cos_x * g * y, sin_x * g)
+
+f.defvjp(f_fwd, f_bwd)
+```
 
 <!--
 The differences between forward and reverse mode have important ramifications for computational and memory complexity, which are explained in depth in most discussions of automatic differentiation.
