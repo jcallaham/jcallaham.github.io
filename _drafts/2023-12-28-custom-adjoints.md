@@ -1,7 +1,7 @@
 ---
 layout: post
 title: "Deriving automatic differentiation rules"
-date: 2023-12-12T05:30:30-04:00
+date: 2023-12-28T05:30:30-04:00
 categories:
   - blog
 tags:
@@ -9,7 +9,7 @@ tags:
   - autodiff
 ---
 
-If you're working heavily with an automatic differentiation system like PyTorch, JAX, or Flux.jl, a lot of the time you don't have to think too much about how the magic happens. But every so often you might find yourself doing something that the framework doesn't know how to differentiate properly. It's also common that a custom autodiff "rule" will be more efficient when a function output is the result of an algorithm: matrix inversion, linear system solving, root-finding, etc. The first time I had to do this was when using LogSumExp in a cost function in Firedrake for minimizing peak von Mises stress in structural design optimization. It came up another time for differentiating through mechanical collisions in a JAX-based multibody dynamics simulation using saltation matrices (which is an interesting topic that could merit its own post).
+If you're working heavily with an automatic differentiation system like PyTorch, JAX, or Flux.jl, a lot of the time you don't have to think too much about how the magic happens. But every so often you might find yourself doing something that the framework doesn't know how to differentiate properly. It's also common that a custom autodiff "rule" will be more efficient when a function output is the result of an algorithm: matrix inversion, linear system solving, root-finding, etc.
 
 The documentation for autodiff frameworks usually shows some way of implementing these kinds of custom "rules" (see for example the relevant pages for [PyTorch](https://pytorch.org/tutorials/beginner/examples_autograd/two_layer_net_custom_function.html), [JAX](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html), and [Zygote.jl](https://fluxml.ai/Zygote.jl/dev/adjoints/)), but these pages typically don't go into depth about how to derive them. And while there are some great resources for learning about how AD works in general, they usually stop short of explanations for what to do in these oddball cases. The goal of this post is to write the tutorial I was looking for when I first ran into this.
 
@@ -22,29 +22,28 @@ If that troubles you, I'm guessing you may not really need a tutorial on this to
 That said, the [documentation for ChainRulesCore.jl](https://juliadiff.org/ChainRulesCore.jl/stable/maths/propagators.html) has a great writeup on this topic for anyone looking for a little more rigor (although they also caveat their own lack of rigor...), whether or not you're actually using Julia.
 You could also read this first and then go check out their documentation.
 
-<!-- TODO: Introduce some code (JAX?) to illustrate implementing JVP earlier -->
-
 Here's what we'll cover:
 
-1. **Autodiff basics**: A quick overview of the math of automatic differentiation
-2. **Composing functions**: A look at the building blocks of forward- and reverse-mode AD
-3. **Deriving forward-mode AD rules**: Deriving the Jacobian-vector product
-4. **Beyond vectors**: Looking at the Jacobian as a map rather than a matrix
-5. **Multiple inputs and outputs**: Functions with multiple arguments or return values
-6. **Adjoint maps and the vector-Jacobian product**: Some math background for reverse-mode
-7. **Deriving reverse-mode AD rules**: A simple procedure that should work in most cases
-8. **Reverse mode examples**: Implementing a handful of custom rules in code
-9. **Equality-constrained quadratic program**: A final example combining most of the principles
-10. **Final thoughts**: A couple of practical tips
+1. **Autodiff basics**
+2. **Linear maps and adjoints**
+3. **Deriving forward-mode AD rules**
+4. **Forward-mode examples**
+5. **Deriving reverse-mode AD rules**
+6. **Reverse mode examples**
+7. **Putting it all together: equality-constrained quadratic program**
+8. **Final thoughts**
 
-### The math of automatic differentiation
+---
+### Autodiff basics
 
-The basic purpose of automatic differentiation (AD) is computing the derivative of the result of some numerical computation with respect to the inputs.
+Let's start with the simple case of a function $y = f(x)$ that takes as input one vector $x \in \mathbb{R}^n$ and returns another $y \in \mathbb{R}^m$, so $f: \mathbb{R}^n \rightarrow \mathbb{R}^m$. This actually won't really cover a lot of practical cases, but hopefully it'll be a good way to get a feel for the basic mechanics. In the next section we'll start to see how to extend the basic version to more general cases.
+
+The purpose of automatic differentiation (AD) is computing the derivative of the result of some numerical computation with respect to the inputs.
 AD systems assume that even highly complex functions can be decomposed into a sequence (or graph) of relatively simple primitive operations, each of which can be analytically differentiated in isolation.
 Under that assumption, the derivative of complex functions can be decomposed into a second graph of the derivatives of the primitive operations using the chain rule from calculus.
 
 The way that the analytic derivatives are implemented is in terms of rules for Jacobian-vector products (in forward mode) and vector-tranpose-Jacobian products (in reverse mode).
-For example, if we have a vector-valued function $f: \mathbb{R}^n \rightarrow \mathbb{R}^m$, its derivative at some nominal input values $x \in \mathbb{R}^n$ is the Jacobian $\partial f(x) \equiv df/dx \in \mathbb{R}^{m \times n}$.
+So for $f: \mathbb{R}^n \rightarrow \mathbb{R}^m$, we can think of its derivative at some nominal input values $x \in \mathbb{R}^n$ is the Jacobian matrix $\partial f(x) \equiv df/dx \in \mathbb{R}^{m \times n}$.
 The Jacobian-vector product (JVP) applied to a "tangent" vector $v \in \mathbb{R}^n$ essentially implements the matrix-vector multiplication
 
 $$
@@ -58,9 +57,9 @@ If the input is scalar-valued, then $v \in \mathbb{R}$ and this JVP with $v = 1$
 On the other hand, if the input is vector-valued, reconstructing the full Jacobian would require evaluating the JVP $n$ times, for instance using the unit basis vectors as tangent vectors $v$.
 When $n$ is large this becomes very expensive, but fortunately it is rarely necessary to explicitly form the full Jacobian; many, many algorithms boil down to a series of linear system solves, and iterative linear solvers like CG and GMRES only really need to evaluate the matrix-vector product, which is exactly what the JVP provides.
 
-As we'll see in the next section, the Jacobian-vector product (or pushforward) is the building block of forward-mode autodiff.
-Similarly, the vector-Jacobian product (or pullback) is the main building block of reverse-mode autodiff.
-For the same function $f: \mathbb{R}^n \rightarrow \mathbb{R}^m$ above, the vector-Jacobian product (VJP) applied to an  "adjoint" (or "cotangent", or "dual") vector $w \in \mathbb{R}^m$ implements the vector-transpose-matrix multiplication
+As we'll see, the Jacobian-vector product (also known as the pushforward) is the building block of forward-mode autodiff.
+Similarly, the vector-Jacobian product (also known as the pullback) is the main building block of reverse-mode autodiff.
+For the same function $f: \mathbb{R}^n \rightarrow \mathbb{R}^m$ above, the vector-Jacobian product (VJP) applied to an  "adjoint" (or "covariant", or "dual") vector $w \in \mathbb{R}^m$ implements the vector-transpose-matrix multiplication
 
 $$
 w^T \partial f(x_0).
@@ -104,137 +103,8 @@ If we happen to choose $w=1.0$ as the seed value, then we immediately get the gr
 This is what makes reverse-mode AD (a.k.a. backpropagation) so powerful in the context of optimization.
 It only requires a single backwards pass with about the same computational complexity as the forwards pass to compute the full gradient, no matter how many input variables there are.
 For the same reason, reverse-mode AD is much more efficient at computing full Jacobians for functions with many more inputs than outputs; again, you just have to do a VJP seeded with a standard basis vector for each row of the Jacobian.
-There's a very naive (but hopefully easy to follow) implementation of this in [micrograd.functional](https://github.com/jcallaham/micrograd/blob/master/micrograd/functional.py)
+There's a very naive (but hopefully easy to follow) implementation of this in [micrograd.functional](https://github.com/jcallaham/micrograd/blob/master/micrograd/functional.py).
 
-
-#### Terminology and notation
-
-Variable terminology is part of what makes learning about the details of automatic differentiation a bit difficult.
-My goal here is to use language that makes sense and I'm fine with that being at the expense of a little rigor.
-
-The Jacobian-vector product is also sometimes called the "pushforward" and the vector-Jacobian product is sometimes called the "pullback", borrowing terminology from differential geometry.
-The pushforward is also called the "tangent linear map" and the pullback the "adjoint map".
-Although Jacobians and vectors are more intuitive to me than "pullback" and "pushforward", I'll mostly use the latter terms instead.
-Partly this is because I like that the "map" terminology doesn't imply literal matrix-vector products in the way that "Jacobian-vector product" or "vector-Jacobian product" does, and partly this is to avoid having the confusingly similar acronyms "JVP" and "VJP" all over the place.
-Also, "pushforward" and "pullback" correspond neatly to their use in autodiff systems: "pushforward" is what's used in forward-mode AD, and "pullback" is what's needed for reverse-mode AD (or backpropagation).
-
-Here are the main points:
-
-* For a function $y = f(x)$ I'll call $x$ and $y$ the "nominal" or "primal" values, indicating that they're the values that are being "linearized about" when we are calculating derivatives.
-* The Jacobian will be denoted with the partial derivative symbol, so for a function $f(x)$, $\partial f(x)$ means "the Jacobian of $f$ evaluated at nominal inputs $x$".  The transpose of that, $\partial f(x)^T$, indicates the transposed Jacobian (or more generally the adjoint map).
-* The "pushforward" $\partial f$ is the same thing as the "tangent linear map" or "Jacobian-vector product", which maps from input perturbations to output perturbations.
-* The "pullback" $\partial f^T$ is the same thing as the "adjoint map" or "vector-Jacobian product", which maps from output perturbations to input perturbations.
-* I'll call inputs to the pushforward (a.k.a. Jacobian-vector product) "tangents" or "tangent values" and inputs to the pullback (a.k.a. vector-Jacobian product) "adjoints" or "adjoint values".  This is probably also not technically correct, but you'll see it used sometimes and I think it gets the idea across.
-* Tangent values will be denoted by a "dot" superscript, and adjoint values will be denoted by a "bar".  So for a function $y = f(x)$, the seed value in forward mode is $\dot{x}$ and the Jacobian-vector product calculates $\dot{y} = \partial f(x) \dot{x}$.  In reverse mode the seed value is $\bar{y}$ and the vector-Jacobian product calculates $\bar{x} = \partial f(x)^T \bar{y}$. Personally I don't love this notation (especially when working with ODEs where $\dot{x}$ is usually $dx/dt$), but it's relatively common and I couldn't think of anything better.
-* I won't distinguish between input/output spaces and their tangents, cotangents, etc. This is non-rigorous at best, but it makes the terminology a lot simpler. Also, all of these examples use "flat" spaces like $\mathbb{R}^n$ where the distinction is not that important (in my opinion as someone without a background in advanced geomtery).
-
-### Composing functions
-If $f$ represents a complex calculation -- like a partial differential equation solve or prediction from a machine learning model -- it becomes more and more difficult to compute the linearization $\partial f (x)$ analytically.
-The key insight of AD systems is that often $f$ is composed of a large number of simpler functions, in which case the chain rule tells us that we could write the Jacobian as an expanded set of matrix-vector products.
-
-#### Forward mode
-
-For instance, if $f(x) = g(h(x))$, where we know how to calculate the pushforward (Jacobian-vector product) for both $g$ and $h$, then
-
-$$
-\partial f(x) v = \partial g(h(x)) \partial h(x) v.
-$$
-
-Note that the nominal inputs to $g$ are the outputs from $h$ at its nominal inputs $x$, and the tangent vector for the JVP for $g$ is the output of the pushforward for $h$.
-We can calculate the full pushforward by propagating both the nominal (or "primal") and tangent values through the computational graph in parallel:
-
-![Pushforward](/assets/images/autodiff/pushforward.jpeg){: width="400" style="display: block; margin: 0 auto" }
-
-1. Begin with the nominal input value $x_1$ and seed vector $\dot{x}_1$.
-2. Compute the nominal output $x_2 = g(x_1)$ and pushforward $\dot{x}_2 = \partial g(x_1) \dot{x}_1$.
-3. Compute the nominal output $y = h(x_2)$ and pushforward $\dot{y} = \partial h(x_2) \dot{x}_2$.
-4. Finally, the nominal output is $y$ and the result of the JVP is $\dot{y}$.
-
-All information required to compute each component Jacobian-vector product is passed via the primal and tangent vectors.
-This means that the forward-mode rule for some primitive function can be implemented in complete isolation. Basically, your function will be somewhere in this chain.
-
-**As the implementer of the pushforward (Jacobian-vector product), you can expect to be handed a seed vector (an element of the input space) along with the nominal input values and your job is to calculate the pushforward (returning an element of the output space)**.
-
-Here's a simple example from the [JAX documentation](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-jvps-with-jax-custom-jvp) deriving the pushforward (JVP) for the function $f(x, y) = \sin(x) + y$.
-Since this is basically a scalar function (you don't have to worry too much about broadcasting, ufuncs, etc in JAX), it's easy to calculate the derivatives with basic calculus.
-Note that the pushforward is basically the total derivative: if $z = f(x, y)$, the value `tangent_out` is $\dot{z}$, where
-
-$$
-\dot{z} = \frac{\partial f}{\partial x} \dot{x} + \frac{\partial f}{\partial y} \dot{y}.
-$$
-
-We'll explain that and build on it further later, for now just take a quick look at the code to get a feel for the structure -- maybe you can recognize some of the pieces we've already talked about.
-
-```python
-import jax.numpy as jnp
-from jax import custom_jvp
-
-@custom_jvp
-def f(x, y):
-  return jnp.sin(x) * y
-
-@f.defjvp
-def f_jvp(primals, tangents):
-  x, y = primals
-  x_dot, y_dot = tangents
-  primal_out = f(x, y)
-  tangent_out = jnp.cos(x) * x_dot * y + jnp.sin(x) * y_dot
-  return primal_out, tangent_out
-```
-
-#### Reverse mode
-
-In a sense, the pullback (vector-Jacobian product) just performs the products in the chain rule in the opposite order.
-The pullback for $f(x) = g(h(x))$ expands to
-
-$$
-w^T \partial f(x) = w^T \partial g(h(x)) \partial h(x).
-$$
-
-Calculating this presents a bit of a puzzle.
-The vector-transpose-matrix products propagate from left to right, but $g$ still requires as its inputs the nominal outputs $h(x)$, implying that the primal calculation has to be completed before the VJP.
-This is the root of the "forward/backwards" passes in the reverse-mode algorithm.
-The primal calculation is fully completed _first_, with all intermediate values stored.
-Then the pullback can be calculated by propagating the adjoint values _backwards_ through the computational graph:
-
-![Pullback](/assets/images/autodiff/pullback.jpeg){: width="340" style="display: block; margin: 0 auto" }
-
-1. Begin with the nominal input value $x$ and seed vector $\bar{y}$.
-2. Compute the intermediate primal output $x_2 = g(x_1)$.  Save this value for later.
-3. Compute the final primal output $y = h(x_2)$.
-4. Compute the VJP for the second function: $\bar{x}_2 = \partial h(x_2)^T \bar{y}$.
-5. Compute the VJP for the first function: $\bar{x}_1 = \partial g(x)^T \bar{x}_2 \equiv \bar{x}$.
-6. The full VJP $\partial f(x)^T \bar{y}$ is $\bar{x}$.
-
-Note that the full "forward pass" happens _first_, storing intermediate results, and _then_ the "backwards pass" happens, using stored primal values from the forward pass.
-
-Again, your custom function will happen somewhere in this process. **As the implementer of the pullback (vector-Jacobian product), you will implement one stage of the backwards pass: you can expect to be handed an adjoint vector (an element of the output space) along with the nominal input/output values and your job is to calculate the pullback (returning an element of the input space)**.
-
-Here's the same example as before from the [JAX docs](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-vjps-with-jax-custom-vjp), but this time implementing the VJP.
-As before, it's easy to calculate these derivatives by hand.
-But this time note that what gets returned is the gradient of the output evaluated at the nominal values, scaled by the adjoint value `g`:
-
-```python
-from jax import custom_vjp
-
-@custom_vjp
-def f(x, y):
-  return jnp.sin(x) * y
-
-def f_fwd(x, y):
-# Returns primal output and residuals to be used in backward pass by f_bwd.
-  return f(x, y), (jnp.cos(x), jnp.sin(x), y)
-
-def f_bwd(res, g):
-  cos_x, sin_x, y = res # Gets residuals computed in f_fwd
-  return (cos_x * g * y, sin_x * g)
-
-f.defvjp(f_fwd, f_bwd)
-```
-
-<!--
-The differences between forward and reverse mode have important ramifications for computational and memory complexity, which are explained in depth in most discussions of automatic differentiation.
- -->
 
 #### Static vs dynamic data
 
@@ -275,10 +145,255 @@ That's not to say you never need the Jacobian $\partial_x f$ for _anything_, but
 This can be hard to keep track of, especially since $\theta$ are often called parameters and $x$ and $y$ are inputs and outputs.
 Just try to think carefully about what you actually need to compute the sensitivity of, and with respect to what inputs.
 
-### Deriving forward-mode AD rules (JVP)
+#### Composing functions
 
-Let's start with _forward-mode_ autodiff, which as described in the previous section essentially amounts to decomposing a complex Jacobian-vector product (or pullback, or tangent linear map) into a number of simpler pullbacks using the chain rule.
-If we want to implement a custom AD rule for forward mode, then we just have to derive and implement its pullback, which basically amounts to linearizing the function.
+If $f$ represents a complex calculation -- like a partial differential equation solve or prediction from a machine learning model -- it becomes more and more difficult to compute the linearization $\partial f (x)$ analytically.
+The key insight of AD systems is that often $f$ is composed of a large number of simpler functions, in which case the chain rule says that the Jacobian is a series of matrix-vector products.
+
+For instance, if $f(x) = g(h(x))$, where we know how to calculate the Jacobian-vector product (pushforward) for both $g$ and $h$, then
+
+$$
+\partial f(x) v = \partial g(h(x)) \partial h(x) v.
+$$
+
+Note that the nominal inputs to $g$ are the outputs from $h$ at its nominal inputs $x$, and the tangent vector for the JVP for $g$ is the output of the JVP for $h$.
+We can calculate the full JVP by propagating both the nominal (or "primal") and tangent values through the computational graph in parallel:
+
+![Pushforward](/assets/images/autodiff/pushforward.jpeg){: width="400" style="display: block; margin: 0 auto" }
+
+1. Begin with the nominal input value $x_1$ and seed vector $\dot{x}_1$.
+2. Compute the nominal output $x_2 = g(x_1)$ and pushforward $\dot{x}_2 = \partial g(x_1) \dot{x}_1$.
+3. Compute the nominal output $y = h(x_2)$ and pushforward $\dot{y} = \partial h(x_2) \dot{x}_2$.
+4. Finally, the nominal output is $y$ and the result of the JVP is $\dot{y}$.
+
+All information required to compute each component Jacobian-vector product is passed via the primal and tangent vectors.
+This means that the forward-mode rule for some primitive function can be implemented in complete isolation. Basically, your function will be somewhere in this chain.
+
+**As the implementer of the pushforward (Jacobian-vector product), you can expect to be handed a seed vector (an element of the input space) along with the nominal input values and your job is to calculate the pushforward (returning an element of the output space)**.
+
+Here's a simple example borrowed from the [JAX documentation](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-jvps-with-jax-custom-jvp) deriving the pushforward (JVP) for the function $f(x, y) = \sin(x) + y$.
+Since this is basically a scalar function (you don't have to worry too much about broadcasting, ufuncs, etc in JAX), it's easy to calculate the derivatives with basic calculus.
+Note that the JVP is basically the total derivative: if $z = f(x, y)$, the value `tangent_out` is $\dot{z}$, where
+
+$$
+\dot{z} = \frac{\partial f}{\partial x} \dot{x} + \frac{\partial f}{\partial y} \dot{y}.
+$$
+
+We'll explain that and build on it further later, for now just take a quick look at the code to get a feel for the structure -- maybe you can recognize some of the pieces we've already talked about.
+
+```python
+import jax.numpy as jnp
+from jax import custom_jvp
+
+@custom_jvp
+def f(x, y):
+  return jnp.sin(x) * y
+
+@f.defjvp
+def f_jvp(primals, tangents):
+  x, y = primals
+  x_dot, y_dot = tangents
+  primal_out = f(x, y)
+  tangent_out = jnp.cos(x) * x_dot * y + jnp.sin(x) * y_dot
+  return primal_out, tangent_out
+```
+
+In a sense, the vector-Jacobian product (pullback) just performs the products in the chain rule in the opposite order.
+The pullback for $f(x) = g(h(x))$ expands to
+
+$$
+w^T \partial f(x) = w^T \partial g(h(x)) \partial h(x).
+$$
+
+Calculating this presents a bit of a puzzle.
+The vector-transpose-matrix products propagate from left to right, but $g$ still requires as its inputs the nominal outputs $h(x)$, implying that the primal calculation has to be completed before the VJP.
+This is the root of the "forward/backwards" passes in the reverse-mode algorithm.
+The primal calculation is fully completed _first_, with all intermediate values stored.
+Then the pullback can be calculated by propagating the adjoint values _backwards_ through the computational graph:
+
+![Pullback](/assets/images/autodiff/pullback.jpeg){: width="340" style="display: block; margin: 0 auto" }
+
+1. Begin with the nominal input value $x$ and seed vector $\bar{y}$.
+2. Compute the intermediate primal output $x_2 = g(x_1)$.  Save this value for later.
+3. Compute the final primal output $y = h(x_2)$.
+4. Compute the VJP for the second function: $\bar{x}_2 = \partial h(x_2)^T \bar{y}$.
+5. Compute the VJP for the first function: $\bar{x}_1 = \partial g(x)^T \bar{x}_2 \equiv \bar{x}$.
+6. The full VJP $\partial f(x)^T \bar{y}$ is $\bar{x}$.
+
+Note that the full "forward pass" happens _first_, storing intermediate results, and _then_ the "backwards pass" happens, using stored primal values from the forward pass.
+
+Again, your custom function will happen somewhere in this process. **As the implementer of the pullback (vector-Jacobian product), you will implement one stage of the backwards pass: you can expect to be handed an adjoint vector (an element of the output space) along with the nominal input/output values and your job is to calculate the pullback (returning an element of the input space)**.
+
+Here's the same example as before borrowed from the [JAX docs](https://jax.readthedocs.io/en/latest/notebooks/Custom_derivative_rules_for_Python_code.html#custom-vjps-with-jax-custom-vjp), but this time implementing the VJP.
+As before, it's easy to calculate these derivatives by hand.
+But this time note that what gets returned is the gradient of the output evaluated at the nominal values, scaled by the adjoint value `g`:
+
+```python
+from jax import custom_vjp
+
+@custom_vjp
+def f(x, y):
+  return jnp.sin(x) * y
+
+def f_fwd(x, y):
+# Returns primal output and residuals to be used in backward pass by f_bwd.
+  return f(x, y), (jnp.cos(x), jnp.sin(x), y)
+
+def f_bwd(res, g):
+  cos_x, sin_x, y = res # Gets residuals computed in f_fwd
+  return (cos_x * g * y, sin_x * g)
+
+f.defvjp(f_fwd, f_bwd)
+```
+
+
+---
+### Linear maps and adjoints
+
+Now that we've covered the basics, let's zoom out a bit.
+As we've seen, a "pass" through an autodiff framework is basically made up of a sequence of linear operations, even when the function being differentiated is nonlinear.
+There's nothing magic about that; differentiation is linear, the chain rule is linear, and automatic differentiation is really just an algorithm for computing the chain rule.
+So in order to really understand AD, we need to understand two things: linear maps, and their adjoints.
+
+Honestly, for a long time I thought that a linear operator was basically the same thing as a matrix, an adjoint was the same thing as a matrix transpose, and these distinctions were just mathematicians being pedantic.
+Now I've come around, and I hope I can make the case here for why these concepts are practically useful.
+
+Let's start with an $m \times n$ matrix $A$. We might say that by virtue of matrix-vector multiplication this matrix defines a linear map from $\mathbb{R}^n$ to $\mathbb{R}^m$. Its "adjoint" defines another linear map from $\mathbb{R}^m$ to $\mathbb{R}^n$.
+Consider the dot product of an arbitrary vector $w$ in the output space $\mathbb{R}^m$ with the vector $y = A x$, also in the output space.
+Using basic properties of the transpose we could equivalently write this as
+
+$$
+\begin{align}
+w \cdot (Ax) &= w^T (A x) \\
+&= (A^T w)^T x \\
+&= (A^T w) \cdot x.
+\end{align}
+$$
+
+The left-hand side is the dot product of $y$ with $Ax$ and the right-hand side is the dot product of the vector $A^T y$ with $x$.
+In "bra-ket" inner product notation, we could write this equivalence as
+
+$$
+\langle w, Ax \rangle = \langle A^\dagger w, x \rangle,
+$$
+
+where $A^\dagger$ is the adjoint, which in this case is just the matrix transpose $A^T$.
+In fact this is the _definition_ of the adjoint, which will turn out to be more general than a simple identity relating to the matrix transpose, but we'll come back to that.
+For now, let's make a couple of observations about this definition of the adjoint:
+
+1. The output space of $A^\dagger$ is the input space of $A$, and vice versa. That is, the adjoint maps from the output space of the original matrix to its input space.
+2. The left-hand side of the equation is an inner product in the output space (in this case a dot product between two vectors in $\mathbb{R}^m$) and the right-hand side is an inner product in the input space (a dot product between two vectors in $\mathbb{R}^n$).
+3. The adjoint is only defined with respect to a particular inner product. If we were to start from this definition we would find that the adjoint and the transpose of a matrix are only the same when the inner product is specifically the dot product $\langle u, v \rangle = u^T v$. For instance, if $m=n$ you could choose a weighted inner product $\langle u, v \rangle = u^T M v$ with symmetric positive definite $n \times n$ matrix $M$ and you would find that the adjoint is $A^\dagger = M^{-1} A^T M$ rather than just $A^T$ (try it!).
+
+<!-- From these observations we can try to make an intuitive statement about what an adjoint "is": **the adjoint of a linear operator is a "dual" linear operator which maps from the output space of the original operator to its input space and is defined by a particular equivalence between inner products in the input and output spaces**. -->
+
+This is all fine so far, and for our purposes that's all we need for functions with vector inputs and outputs. But what about functions of tensors? Or functions with multiple inputs and outputs? What if it's really expensive or inconvenient to actually represent our linear operation as a matrix?
+
+This is where the more general idea of a "linear map" comes in. If we have a linear operator $\mathcal{A}$ (in slightly curly font to distinguish it from a normal matrix $A$) that maps from input space $\mathcal{X}$ to output space $\mathcal{Y}$, then it has the general linearity property that for any two scalars $\alpha$ and $\beta$ and elements of the input space $u, v \in \mathcal{X}$, then $\mathcal{A}(\alpha u + \beta v) = \alpha \mathcal{A} u + \beta \mathcal{A} v$.
+So far this still looks like we might just be describing a matrix, except that elements of $\mathcal{X}$ and $\mathcal{Y}$ _don't need to be vectors_.
+They could be matrices, tensors, L2-integrable functions, or any number of other things.
+
+From a computational point of view, for a linear operator $\mathcal{A}$ all we need to know is how to compute its "action".
+That is, given $x \in \mathcal{X}$, we have to be able to return $y = \mathcal{A} x$.
+Again, this looks like matrix multiplication, but it might be better to think of $\mathcal{A}$ as a function that happens to be linear.
+A matrix is one example of a linear map where the "action" is defined by matrix-vector multiplication.
+
+A simple example of a linear map is matrix symmetrization. For the input space of square $n \times n$ matrices, we can define the linear map $\mathcal{A}: \mathbb{R}^{n \times n} \rightarrow \mathbb{R}^{n \times n}$ as $\mathcal{A} X =(X + X^T)/2$. This is clearly linear, but it's not straightforward to find a matrix or tensor representation for the operator $\mathcal{A}$: should it be an $n \times n \times n \times n$ tensor, an $n^2 \times n^2$ matrix, or something else? It's much easier (and memory-efficient!) to just think of it as a linear map and leave it at that.
+
+Given a linear map $\mathcal{A}: \mathcal{X} \rightarrow \mathcal{Y}$ and inner products defined on both $\mathcal{X}$ (the input space) and $\mathcal{Y}$ (the output space), then as in the matrix case we can define the _adjoint_ operator $\mathcal{A}^\dagger: \mathcal{Y} \rightarrow \mathcal{X}$ with
+
+$$
+\langle w, \mathcal{A} x \rangle = \langle \mathcal{A}^\dagger w, x \rangle,
+$$
+
+where $w \in \mathcal{Y}$ is an arbitrary element of the output space.
+As before, notice that the left-hand side is an inner product in output space $\mathcal{Y}$, while the right-hand side is in input space $\mathcal{X}$.
+
+We don't need to get too technical about inner products here; the most basic case is that $x$ and $y$ are just vectors, so that a natural inner product is $\langle u, v\rangle = u^T v$.
+However, the more general inner product definition opens up some additional possibilities.
+Here are a couple of useful inner products (assuming everything is real -- you can look up the complex versions if you need to):
+
+* Vectors: $\langle u, v\rangle = u^T v$
+* Matrices: $\langle A, B \rangle = \mathrm{trace}\left(A B^T\right)$
+* Continuous functions: $\langle f, g \rangle = \int f(x) g(x) ~ dx$.
+
+<!-- The one that might be surprising there is the continuous functions.
+This can be useful for deriving various reverse-mode AD rules in scientific computing, where we often use things like piecewise polynomials to approximate continuous functions. -->
+
+<!-- As a hopefully-not-too-confusing terminology reminder, I'm also calling the vectors that the adjoint map _acts on_ "adjoint values".
+These are the ones with the bar superscript, as opposed to the "tangent values" which have the dot superscript.
+I believe a more correct term would be something like "covariant" or "cotangent" vector, but I've seen "adjoint values" used quite a bit in more applied contexts, and anyway I think those other terms are a little obscure. -->
+
+<!-- 
+
+$$
+\langle w, \mathcal{A} x \rangle = \langle \mathcal{A}^T w, x \rangle.
+$$
+
+Note that the adjoint maps from the _output_ space to the _input_ space (as does a matrix transpose), so the first inner product is between elements of the output space $\mathcal{Y}$, while the second is between elements of the input space $\mathcal{X}$. -->
+
+Given a linear map and an appropriate inner product, we can derive the adjoint by taking the inner product of $y = \mathcal{A} x$ with an arbitrary element of the output space $w$, so $\langle w, \mathcal{A} x \rangle$, and then manipulating it to the form $\langle A^\dagger w, x \rangle$. From that we can infer the action of the adjoint $\mathcal{A}^\dagger$ on $w$.
+
+In the matrix symmetrization example, we could take the inner product of $\mathcal{A}X = (X + X^T)/2$ with an arbitrary $n \times n$ matrix $W$.
+Using the trace inner product, we get:
+
+$$
+\begin{align}
+\langle W, (X + X^T) / 2 \rangle &= \mathrm{trace}(W (X^T + X)) / 2 \\
+&= \left( \mathrm{trace}(W X^T) + \mathrm{trace}(W^T X^T) \right) / 2 \\
+&= \mathrm{trace}((W + W^T) X^T) / 2 \\
+&= \langle (W + W^T)/2, X \rangle.
+\end{align}
+$$
+
+This is now in the form of the adjoint inner product: $\langle \mathcal{A}^\dagger W, X \rangle$ if the action of the adjoint operator is defined to be $\mathcal{A}^\dagger W = (W + W^T)/2$.  Again, we don't need a matrix representation for the adjoint operator.
+In this particular example the operator is self-adjoint, so $\mathcal{A} = \mathcal{A}^\dagger$.
+Also, we could have just transposed everything in the original linear map to get the right answer.
+That's not exactly a coincidence, but we won't want to rely on that; it's much safer to just go through the manipulations with the inner products.
+
+With the more general concepts of the linear map and its adjoint in hand, we'll now be able to deal with linear operators that operate on and return all kinds of mathematical objects.
+But many functions are inherently nonlinear: why is the idea of a linear map and its adjoint useful in automatic differentiation?
+For functions where the input and/or output are not 1D vectors, the generalization of the Jacobian is the _tangent linear map_, or _pushforward_. This is the result of linearizing a nonlinear map about some nominal input values.
+
+While forward-mode autodiff for "vector functions" boils down to a series of Jacobian-vector products, for more general functions the chain rule results in a series of applications of the tangent linear maps (pushforwards).  Likewise, reverse-mode autodiff for "vector functions" is a sequence of vector-Jacobian products, but the generalization is a series of applications of the adjoints of the tangent linear maps (pullbacks).
+
+We can write the math for forward- and reverse-mode in basically the same notation as before, except that we will no longer think of the "Jacobian" in the JVP as a literal matrix, but as a more general linear map from the input space to the output space (though see the caveat about tangent and cotangent spaces below). Similarly, we will think of the VJP as an application of the adjoint map, not literally a transposed-matrix-vector product.
+For a function $f$, we'll denote the tangent linear map by $\partial f$, and its adjoint by $\partial f^T$, but keep in mind that the "T" doesn't necessarily indicate a literal matrix transposition.
+
+Now we've gone over the key concepts of the linear map and its adjoint.
+At this point these ideas might still seem fairly abstract, but they make more sense (and start to feel more useful) once you have a little experience working with them.
+
+#### Sidebar: terminology and notation
+
+Variable terminology is part of what makes learning about the details of automatic differentiation a bit difficult.
+My goal here is to use language that makes sense and I'm fine with that being at the expense of a little rigor.
+
+As we've said, the tangent linear map is also sometimes called the "pushforward" and its adjoint is sometimes called the "pullback", borrowing terminology from differential geometry.
+These terms are sometimes used interchangeably with "Jacobian-vector product" and "vector-Jacobian product"
+Although Jacobians and vectors are more intuitive to me than "pullback" and "pushforward", I'll mostly use the latter terms instead.
+Partly this is because I like that the "map" terminology doesn't imply literal matrix-vector products in the way that "Jacobian-vector product" or "vector-Jacobian product" does, and partly this is to avoid having the confusingly similar acronyms "JVP" and "VJP" all over the place.
+Also, "pushforward" and "pullback" correspond neatly to their use in autodiff systems: "pushforward" is what's used in forward-mode AD, and "pullback" is what's needed for reverse-mode AD (or backpropagation).
+
+Here are the main points:
+
+* For a function $y = f(x)$, $x$ and $y$ are the "nominal" or "primal" values, indicating that they're the values that are being "linearized about" when we are calculating derivatives.
+* The Jacobian or will be denoted with the partial derivative symbol, so for a function $f(x)$, $\partial f(x)$ means "the Jacobian of $f$ evaluated at nominal inputs $x$".  The transpose notation $\partial f(x)^T$ indicates the adjoint.
+* The "pushforward" $\partial f$ is the same thing as the "tangent linear map" or "Jacobian-vector product", which maps from input perturbations to output perturbations.
+* The "pullback" $\partial f^T$ is the same thing as the "adjoint map" or "vector-Jacobian product", which maps from output perturbations to input perturbations.
+* I'll call inputs to the pushforward (a.k.a. Jacobian-vector product) "tangents" or "tangent values" and inputs to the pullback (a.k.a. vector-Jacobian product) "adjoints" or "adjoint values".  This is probably also not technically correct, but you'll see it used sometimes and I think it gets the idea across.
+* Tangent values will be denoted by a "dot" superscript, and adjoint values will be denoted by a "bar".  So for a function $y = f(x)$, the seed value in forward mode is $\dot{x}$ and the Jacobian-vector product calculates $\dot{y} = \partial f(x) \dot{x}$.  In reverse mode the seed value is $\bar{y}$ and the vector-Jacobian product calculates $\bar{x} = \partial f(x)^T \bar{y}$. Personally I don't love this notation (especially when working with ODEs where $\dot{x}$ is usually $dx/dt$), but it's relatively common and I couldn't think of anything better.
+* I won't distinguish between input/output spaces and their tangents, cotangents, etc. This is non-rigorous at best, but it makes the terminology a lot simpler. Also, all of these examples use "flat" spaces like $\mathbb{R}^n$ where the distinction is not that important (in my opinion as someone without a background in advanced geomtery).
+
+
+<!--
+The differences between forward and reverse mode have important ramifications for computational and memory complexity, which are explained in depth in most discussions of automatic differentiation.
+ -->
+
+---
+### Deriving forward-mode AD rules (pushforward)
+
+Let's start with _forward-mode_ autodiff, which as we've seen essentially amounts to decomposing a complex Jacobian-vector product (or pushforward, or tangent linear map) into a number of simpler pushforwards using the chain rule.
+If we want to implement a custom AD rule for forward mode, then we just have to derive and implement its pushforward, which basically amounts to linearizing the function.
 This is usually easier than deriving reverse-mode rules, and often is actually a key step in that process, but we'll come back to that.
 
 In mathematical terms, let's say our custom function is $f(x): \mathbb{R}^n \rightarrow \mathbb{R}^m$.
@@ -310,35 +425,82 @@ $$
 
 This is the equation for the Jacobian-vector product, if we replace the input perturbation $\delta x$ with the tangent input value $\dot{x}$ and the output perturbation $\delta y$ with the tangent output $\dot{y}$.
 
-#### Example: matrix-vector product
+This same approach works for inputs and outputs that are not vectors, provided we view the result of the linearization as a general tangent linear map rather than an $m \times n$ Jacobian matrix.
+We can even use this in the case where $y$ is defined as a function of $x$ _implicitly_ by the solution of some equation $f(x, y) = 0$. Again, we will perturb both $x$ and $y$, discard higher-order terms in $\delta$, and then manipulate it to "Taylor series" form.
 
-To illustrate this process, let's look at a very simple function, for which we can just read off the Jacobian right away: a matrix-vector multiply $f(x) = A x$ with $x \in \mathbb{R}^n$ and $A \in \mathbb{R}^{m \times n}$.
-Of course, since this is a linear function, we can immediately see that the Jacobian is just $A$, but let's go through the process anyway.
-First we perturb both the input and the output:
+#### Multiple inputs and outputs
 
-$$
-y + \delta y = A (x + \delta x)
-$$
 
-Then expand to Taylor-series form:
+So far we've only looked at functions with one input and one output, but really the more general case is not much more difficult.
+Let's take the case of multiple inputs first.
+In normal multivariate calculus, we expand multi-input functions with the total derivative. For $z = f(x, y)$, this looks like
 
 $$
-y + \delta y = Ax + A \delta x
+\delta z = \frac{\partial f}{\partial x} \delta x + \frac{\partial f}{\partial y} \delta y.
 $$
 
-Since we know $y = Ax$ from the original equation, we can cancel those terms, leaving
+Similarly, for a function with two inputs, we can think of the Jacobian as consisting of two maps, one for each input $\rightarrow$ output pathway.
+The pushforward will need to accept one tangent value for each input, so if $v = (\dot{x}, \dot{y})$, then we could write
+<!-- To keep track of various tangent inputs, sometimes these are denoted by a "dot" in the Jacobian-vector product notation, so that $v = (\dot{x}, \dot{y})$ and we can write the expanded JVP like this (it is _not_ a time derivative): -->
 
 $$
-\delta y = A \delta x,
+\dot{z} = \partial f(x, y) v = \partial_x f(x, y) \dot{x} + \partial_y f(x, y) \dot{y}.
 $$
 
-which tells us that the pushforward can be calculated with
+Now we have to derive each map $\partial_x f$ and $\partial_y f$ in a similar manner as we did for the single-input case, but otherwise everything works more or less the same.
+
+For functions with multiple outputs, it's sometimes easiest to think of each output as the result of a different function and derive the pushforward separately for each.
+For instance, if a function $f(x)$ returns a tuple $(y, z)$, the pushforward for $f$ can be derived by thinking of it as two stacked functions $y = g(x)$ and $z = h(x)$:
 
 $$
-\dot{y} = \partial f(x) \dot{x} = A \dot{x}.
+\begin{bmatrix}
+y \\ z
+\end{bmatrix} =
+f(x) \equiv
+\begin{bmatrix}
+g(x) \\ h(x)
+\end{bmatrix}.
 $$
 
-This is a pretty good sanity check: the original function is already linear, so the "linearization" should be exactly the same as the original.
+Then you can derive the rules for $g$ and $h$ as usual and just return a tuple of the tangent outputs.
+Of course, it will commonly be the case that $g$ and $h$ might share some computations, so actually _implementing_ the JVPs as two separate functions might not be very efficient, but it's at least a convenient way to derive them.
+
+Other times, it's more straightforward to keep the outputs together.
+This will be the case for instance in the equality-constrained quadratic programming example at the end.
+
+---
+### Forward-mode examples
+
+#### Example 1: matrix-vector product
+
+To illustrate this process, let's look at a simple function: a matrix-vector multiplication $y = f(A, x) = A x$ with $x \in \mathbb{R}^n$ and $A \in \mathbb{R}^{m \times n}$.
+First we perturb the inputs and the output:
+
+$$
+y + \delta y = (A + \delta A) (x + \delta x)
+$$
+
+Then expand everything:
+
+$$
+y + \delta y = Ax + A \delta x + \delta A x + \delta A \delta x
+$$
+
+Since we know $y = Ax$ from the original equation, we can cancel those terms.
+We can also discard the last term, since it's a product of two perturbations and we're only keeping first-order terms.
+We're left with
+
+$$
+\delta y = A \delta x + \delta A x,
+$$
+
+which tells us that the pushforward can be calculated for tangent inputs $v = (\dot{A}, \dot{x})$ with
+
+$$
+\dot{y} = \partial f(A, x) v = A \dot{x} + \dot{A} x.
+$$
+
+<!-- 
 
 #### Example: quadratic form
 
@@ -382,29 +544,37 @@ which tells us that the Jacobian is the row vector $\partial f(x) = x^T Q$ and t
 
 $$
 \dot{y} = \partial f(x) \dot{x} = x^T Q \dot{x}.
+$$ 
+-->
+
+#### Example 2: linear system solve
+
+A slightly less obvious example is solving the linear system of equations $A x = b$ for $x$.
+This can be written explicitly as $f(A, b) = A^{-1} b$, but deriving the pushforward is easiest in the implicit form $Ax = b$.
+Perturbing the inputs and outputs,
+
+$$
+(A + \delta A) (x + \delta x) = b + \delta b.
 $$
 
+As usual, we cancel out the nominal solution, discard any higher-order terms, and interpret the result as the definition of the Jacobian-vector product, leaving
 
-### Beyond vectors
+$$
+A \dot{x} + \dot{A} x = \dot{b}.
+$$
 
-So far we'e only looked at functions that had vector inputs and vector outputs, so that the Jacobian could be expressed neatly as a matrix.
-Not all functions can be written conveniently in this way, but these concepts can be expanded neatly to more general input and output spaces.
+This tells us that we can compute the tangent outputs $\dot{x}$ by a second linear system solve:
 
-The simplest of these are functions with tensor inputs and/or outputs.
-Let's say we have a function $f: \mathbb{R}^{n \times m} \rightarrow \mathbb{R}^{p \times q \times r}$, which has a 2D tensor as input and returns a 3D tensor.
-What is the Jacobian here?
-It may be possible to write it as a 5D tensor $\in \mathbb{R}^{p \times q \times r \times n \times m}$ where the Jacobian-vector product is a tensor contraction over the last two dimensions... or if the inputs and outputs are flattened maybe there is a matrix representation $\in \mathbb{R}^{pqr \times nm}$, but neither of these is very convenient.
+$$
+A \dot{x} = \dot{b} - \dot{A} x.
+$$
 
-Instead, it is often much easier to view the Jacobian simply as a linear _map_, which can be conveniently expressed as a matrix when the inputs and outputs are both vectors.
-In this context, the Jacobian is really a matrix representation of the more general idea of a pushforward or tangent linear map.
-The relations in terms of $\delta y$ and $\delta x$ we were just deriving define the "action" of the linear map on an element of the input space, which is all you need for computing a pushforward, no matter what the dimensions of the inputs and outputs are.
-Then we don't need to worry about writing any kind of tensor representation for it.
+As in the Lyapunov equation example, we can reuse our existing linear system solving machinery to calculate the Jacobian-vector product.
 
-It's probably easiest to see this by example.
+#### Example 3: matrix inversion
 
-#### Example: matrix inversion
-
-Suppose $Y = f(X) = X^{-1}$.
+Next let's derive the pushforward for the matrix inversion operation $Y = f(X) = X^{-1}$.
+This is a matrix-valued function, so it's an example of a case where it will be easier to think in terms of linear maps and adjoints than Jacobians and transposes.
 We can derive the pushforward using the definition of the inverse: $X Y = I$, where $I$ is the identity matrix, as an implicit definition of $Y$ as a function of $X$.
 We can follow the same procedure as before, beginning by perturbing $X \rightarrow X + \delta X$ and $Y \rightarrow Y + \delta Y$:
 
@@ -412,7 +582,7 @@ $$
 (X + \delta X) (Y + \delta Y) = I.
 $$
 
-Since $X Y = I$ and we can discard the product of perturbations $\delta X \delta Y$ in the linearization, we are left with
+Since $X Y = I$ and we can discard the product of perturbations $\delta X \delta Y$ when linearizing, we are left with
 
 $$
 X \delta Y + \delta X Y = 0,
@@ -435,10 +605,11 @@ This equation determines the action of the Jacobian, producing the tangent outpu
 
 Note that this could also be derived a little more succintly using the matrix product rule (shown for example in the [ChainRulesCore.jl docs](https://juliadiff.org/ChainRulesCore.jl/stable/maths/arrays.html#Matrix-inversion)), but personally I think the perturbation strategy is easier to reuse in more cases.
 
-#### Example: Lyapunov equation
+#### Example 4: Lyapunov equation
 
+Let's try something a little more ambitious.
 The Lyapunov equation is a matrix equation that frequently appears in linear systems and control theory.
-Viewed as a matrix-valued function, the Lyapunov equation takes as input a matrix $A$ and returns as output the symmetric matrix $P$ to the equation
+Viewed as a matrix-valued function, a Lyapunov equation solver takes as input a matrix $A$ and returns as output the symmetric matrix $P$ to the equation
 
 $$
 A P + P A^T + Q = 0,
@@ -532,86 +703,6 @@ $$
 $$ -->
 
 
-
-### Multiple inputs and outputs
-
-So far we've only looked at functions with one input and one output, but really the more general case is not much more difficult.
-Let's take the case of multiple inputs first.
-In normal multivariate calculus, we expand multi-input functions with the total derivative. For $z = f(x, y)$, this looks like
-
-$$
-\delta z = \frac{\partial f}{\partial x} \delta x + \frac{\partial f}{\partial y} \delta y.
-$$
-
-Similarly, for a function with two inputs, we can think of the Jacobian as consisting of two maps, one for each input $\rightarrow$ output pathway.
-The pushforward will need to accept one tangent value for each input, so if $v = (\dot{x}, \dot{y})$, then we could write
-<!-- To keep track of various tangent inputs, sometimes these are denoted by a "dot" in the Jacobian-vector product notation, so that $v = (\dot{x}, \dot{y})$ and we can write the expanded JVP like this (it is _not_ a time derivative): -->
-
-$$
-\dot{z} = \partial f(x, y) v = \partial_x f(x, y) \dot{x} + \partial_y f(x, y) \dot{y}.
-$$
-
-Now we have to derive each map $\partial_x f$ and $\partial_y f$ in a similar manner as we did for the single-input case, but otherwise everything works more or less the same.
-
-For functions with multiple outputs, it's sometimes easiest to think of each output as the result of a different function and derive the pushforward separately for each.
-For instance, if a function $f(x)$ returns a tuple $(y, z)$, the pushforward for $f$ can be derived by thinking of it as two stacked functions $y = g(x)$ and $z = h(x)$:
-
-$$
-\begin{bmatrix}
-y \\ z
-\end{bmatrix} =
-f(x) \equiv
-\begin{bmatrix}
-g(x) \\ h(x)
-\end{bmatrix}.
-$$
-
-Then you can derive the rules for $g$ and $h$ as usual and just return a tuple of the tangent outputs.
-Of course, it will commonly be the case that $g$ and $h$ might share some computations, so actually _implementing_ the JVPs as two separate functions might not be very efficient, but it's at least a convenient way to derive them.
-
-Other times, it's more straightforward to keep the outputs together.
-This will be the case for instance in the equality-constrained quadratic programming example at the end.
-
-#### Example: matrix-vector product
-
-To see how this works on a simple example, let's revisit the matrix-vector product, but this time viewing it as a two-input, one-output function: $y = f(A, x) = A x$.
-As before $x \in \mathbb{R}^n$ and $A \in \mathbb{R}^{m \times n}$.
-I'll skip some of the algebra here, but following the same procedure as before we get the following linearization:
-
-$$
-\delta y = A \delta x + \delta A x,
-$$
-
-so with tangent inputs $v = (\dot{A}, \dot{x})$, the JVP is
-
-$$
-\dot{y} = \partial f(A, x) v = A \dot{x} + \dot{A} x.
-$$
-
-#### Example: linear system solve
-
-A slightly less obvious example is solving the linear system of equations $A x = b$ for $x$.
-This can be written explicitly as $f(A, b) = A^{-1} b$, but deriving the pushforward is easiest in the implicit form $Ax = b$.
-Perturbing the inputs and outputs,
-
-$$
-(A + \delta A) (x + \delta x) = b + \delta b.
-$$
-
-As usual, we cancel out the nominal solution, discard any higher-order terms, and interpret the result as the definition of the Jacobian-vector product, leaving
-
-$$
-A \dot{x} + \dot{A} x = \dot{b}.
-$$
-
-This tells us that we can compute the tangent outputs $\dot{x}$ by a second linear system solve:
-
-$$
-A \dot{x} = \dot{b} - \dot{A} x.
-$$
-
-As in the Lyapunov equation example, we can reuse our existing linear system solving machinery to calculate the Jacobian-vector product.
-
 <!-- 
 
 ### The implicit function theorem
@@ -660,58 +751,16 @@ This doesn't require being able to differentiate $g$ directly, although it does 
 However, the JVP $\partial g(p) v$ can be evaluated only using the JVPs of the Jacobians of $f$, provided an iterative linear solver is used for the inverse.
 -->
 
-### Adjoint maps and the vector-Jacobian product
+---
+### Deriving reverse-mode AD rules (pushforward)
 
-So far we've only gone over the pushforward (Jacobian-vector product), which is the main building block of forward-mode autodiff.
-But this is only half the story; to take full advantage of autodiff systems we also need to be able to derive reverse-mode rules: pullbacks, or vector-Jacobian products.
-This requires a little more math compared to forward-mode, but we can approach it methodically.
-One mathematical concept that will be very useful is the _adjoint linear map_.
-
-If you know only one thing about adjoints, it's probably that the adjoint of a (real-valued) matrix is the same thing as its transpose.
-This is true, and it's a good place to start.
-Consider the bilinear form $y^T A x$ with $x \in \mathbb{R}^n$, $y \in \mathbb{R}^m$, and $A \in \mathbb{R}^{m \times n}$.
-Using the properties of the transpose we could equivalently write this as
-
-$$
-y^T (A x) = (A^T y)^T x.
-$$
-
-The first one is basically the dot product of $y$ with the vector $Ax$, and the second is the dot product of the vector $A^T y$ with $x$.
-The adjoint is basically just the generalization of this simple equivalence to more general linear maps and "inner product spaces".
-Suppose we have a linear operator $A$ that maps from input space $\mathcal{X}$ (for instance $\mathbb{R}^n$) to output space $\mathcal{Y}$ (for instance $\mathbb{R}^m$).
-If we have an inner product $\langle u, v \rangle$ defined for any two elements $u, v$ in the input or output spaces, then the adjoint $A^T$ is defined as
-
-$$
-\langle y, Ax \rangle = \langle A^T y, x \rangle.
-$$
-
-We don't need to get too technical about inner products; probably the most common case is that $x$ and $y$ are just vectors, so that the natural inner product is $\langle u, v\rangle = u^T v$.
-In this case, then the adjoint definition is really saying the same thing as the previous equation in terms of matrix transposes.
-However, the more general inner product definition opens up some additional possibilities.
-Here are a couple of useful inner products (assuming everything is real -- you can look up the complex versions if you need to):
-
-* Vectors: $\langle u, v\rangle = u^T v$
-* Matrices: $\langle A, B \rangle = \mathrm{trace}\left(A B^T\right)$
-* Continuous functions: $\langle f, g \rangle = \int f(x) g(x) ~ dx$.
-
-The one that might be surprising there is the continuous functions.
-This can be useful for deriving various reverse-mode AD rules in scientific computing, where we often use things like piecewise polynomials to approximate continuous functions.
-
-As a hopefully-not-too-confusing terminology reminder, I'm also calling the vectors that the adjoint map _acts on_ "adjoint values".
-These are the ones with the bar superscript, as opposed to the "tangent values" which have the dot superscript.
-I believe a more correct term would be something like "covariant" or "cotangent" vector, but I've seen "adjoint values" used quite a bit in more applied contexts, and anyway I think those other terms are a little obscure.
-
-At this point the idea of an adjoint might seem fairly abstract, but it's something that makes more sense (and starts to feel more useful) once you have a little experience working with them.
-
-### Deriving reverse-mode AD rules (VJP)
-
-The definition of the adjoint the key to deriving pullbacks, or vector-Jacobian products.
-The general idea is to start by deriving the pushforward (Jacobian-vector product), write an inner product, and then manipulate it until you have something that looks like the definition of the adjoint.
+Now that we've seen how to derive a tangent linear map (pushforward), which we need for forward-mode AD, the next step is to look at deriving the pullback for reverse-mode.
+The general idea is to start by deriving the pushforward (Jacobian-vector product), write an inner product, and then manipulate it until you have an expression that looks like the definition of the adjoint.
 From there you can infer how to compute the pullback.
 
 #### Explicit functions
 
-To make that a little more concrete, let's say we have a function $y = f(x)$, for which we've already derived the pullback (JVP) $\dot{y} = \partial f(x) \dot{x}$.
+To make that a little more concrete, let's say we have a function $y = f(x)$, for which we've already derived the pushforward (JVP) $\dot{y} = \partial f(x) \dot{x}$.
 What we would like to compute is the pullback (VJP) $\bar{x} = \partial f(x)^T \bar{y}$ given some adjoint vector $\bar{y}$.
 
 As a reminder, in forward mode we represented the tangent values with a dot, so the tangent corresponding to an input $x$ was $\dot{x}$.
@@ -768,12 +817,12 @@ $$
 $$
 
 This is the pullback for matrix-vector multiplication.
-Again, it's a good sanity check -- the function was already a linear map defined by $A$, so the pullback (adjoint map) should just be the transpose $A^T$.
+This is a good sanity check -- the function was already a linear map defined by $A$, so the pullback (adjoint map) should just be the transpose $A^T$.
 
 #### Implicit functions
 
 Why use the intermediate value $w$ rather than just taking the inner product with $\bar{y}$ directly?
-This turns out to be useful for more complicated functions, for instance when the result $y$ is defined implicitly by $f(x, y) = 0$.
+This extra step turns out to be useful for more complicated functions, for instance when the result $y$ is defined implicitly by $f(x, y) = 0$.
 In this case the pushforward will look like
 
 $$
@@ -835,11 +884,13 @@ $$
 where we each expression in the inner product with one of the tangent inputs tells us how to compute that adjoint value.
 As for the pushforward, if the function has multiple _outputs_ it may (or may not) be easiest to derive the pullback as if it was two separate functions.
 
+---
 ### Reverse mode examples
 
 Now we're finally ready to work through the full derivation of reverse-mode autodiff rules.
 To show how this works in a simple AD framework, I'll also show implementations of these functions in my [fork of micrograd](https://github.com/jcallaham/micrograd), which I extended to support vectors in a [previous post]({% link _posts/2023-06-22-micrograd.md %}).
 
+<!-- 
 #### Quadratic form
 
 A quadratic form with symmetric weight matrix $Q$ is defined by:
@@ -916,8 +967,149 @@ def quadratic_form(Q, x: Array):
 
     return out
 ```
+-->
 
-#### Matrix inversion
+
+#### Example 1: matrix-vector product
+
+We already took the simple case of a matrix-vector product where the matrix $A$ was held fixed.
+To see how the reverse-mode derivation works on a simple function with multiple inputs, let's look at the case where the matrix $A \in \mathbb{R}^{m \times n}$ is also considered an input:
+
+$$
+y = f(A, x) = A x.
+$$
+
+In the section on forward-mode examples we derived the following pushforward rule from tangent values $(\dot{A}, \dot{x})$ to $\dot{y}$:
+
+$$
+\dot{y} = A \dot{x} + \dot{A} x.
+$$
+
+To derive the pullback, we take the inner product of $\dot{y}$ with an adjoint value $w \in \mathbb{R}^m$ and then apply some basic properties of the inner product to try to isolate the tangent values $\dot{x}$ and $\dot{A}$ in the inner products:
+
+$$
+\begin{align}
+\langle w, \dot{y} \rangle &= \langle w, A \dot{x} + \dot{A} x \rangle \\
+&= \langle w, A \dot{x} \rangle + \langle w, \dot{A} x \rangle \\
+&= \langle A^T w, \dot{x} \rangle + \langle w, \dot{A} x \rangle.
+\end{align}
+$$
+
+That's almost it -- we have $\dot{y}$ and $\dot{x}$ isolated in the inner products.  What do we do about $\dot{A}$?
+Since it's a matrix, it's actually easier to work with the trace inner product for this manipulation:
+
+$$
+\begin{align}
+\langle w, \dot{A} x \rangle &= \mathrm{trace}(w x^T \dot{A}^T) \\
+&= \langle w x^T, \dot{A} \rangle.
+\end{align}
+$$
+
+Then we have it in the form we're looking for:
+
+$$
+\langle w, \dot{y} \rangle = \langle A^T w, \dot{x} \rangle + \langle w x^T, \dot{A} \rangle.
+$$
+
+Finally, we identify the factor of $\dot{y}$ (here, $w$) with the adjoint values $\bar{y}$, and the factors of $\dot{x}$ and $\dot{A}$ with the adjoint values $\bar{x}$ and $\bar{A}$:
+
+$$
+\begin{gather}
+\bar{x} = A^T \bar{y} \\
+\bar{A} = \bar{y} x^T.
+\end{gather}
+$$
+
+The pullback function will be given $\bar{y}$ and the primal values $(A, x, y)$ and will need to return the tuple of adjoint values $(\bar{A}, \bar{x})$.
+
+Here's an implementation for the "dunder" method `__matmul__` of `micrograd.Array`:
+
+```python
+class Array:
+    # [...]
+
+    def __matmul__(self, other):
+        out = Array(self.data @ other.data, (self, other), '@')
+
+        def _backward():
+            _out_grad = out.grad.reshape(-1, 1) if out.grad.ndim == 1 else out.grad
+            _self_data = self.data.reshape(-1, 1) if self.data.ndim == 1 else self.data
+            _other_data = other.data.reshape(-1, 1) if other.data.ndim == 1 else other.data
+        
+            _self_grad = _out_grad @ _other_data.T  # Y_bar @ X.T
+            _other_grad = _self_data.T @ _out_grad  # A.T @ Y_bar
+
+            self.grad += _self_grad.reshape(self.grad.shape)
+            other.grad += _other_grad.reshape(other.grad.shape)
+
+        out._backward = _backward
+
+        return out
+```
+
+#### Example 2: Linear system solve
+
+The derivation for the linear system solve $x = f(A, b) = A^{-1} b$ with $A \in \mathbb{R}^{n \times n}$ works in much the same way.
+We've already derived the pushforward for tangent values $(\dot{A}, \dot{b})$ to $\dot{x}$:
+
+$$
+A \dot{x} = \dot{b} - \dot{A} x.
+$$
+
+Again we take the inner product with an arbitrary element of the output space $w \in \mathbb{R}^n$ and manipulate it to isolate the tangent values in the inner products, which will work in the same way as the previous example.
+
+$$
+\begin{align}
+\langle w, A \dot{x} \rangle &= \langle w, \dot{b} - \dot{A} x \rangle \\
+&= \langle w, \dot{b} \rangle + \langle w, - \dot{A} x \rangle \\
+\langle A^T w, \dot{x} \rangle &= \langle w, \dot{b} \rangle + \langle -w x^T, \dot{A} \rangle.
+\end{align}
+$$
+
+From this we can identify $\bar{x} = A^T w$, $\bar{b} = w$, and $\bar{A} = -w x^T $.
+Then we have the following equations determining $(\bar{A}, \bar{b})$ as a function of $\bar{x}$:
+
+$$
+\begin{gather}
+\bar{x} = A^T w \\
+\bar{A} = -w x^T \\
+\bar{b} = w.
+\end{gather}
+$$
+
+The procedure for calculating $(\bar{A}, \bar{b})$ is therefore to solve the first system of equations for $w$, and then use this result in the other equations for $\bar{A}$ and $\bar{b}$ (or just do the obvious elimination of $w = \bar{b}$ first).
+Here's the code:
+
+```python
+def solve(A, b):
+    # Solve the linear system `Ax = b`` for x
+    # Both A and b are "dynamic" data, so we need to compute both their gradients.
+
+    # Forward pass: compute the solution
+    out = Array(linalg.solve(A.data, b.data), (A, b), 'solve')
+
+    # Backward pass: compute the gradients with respect to A and b
+    def _backward():
+        # The adjoint outputs will be in `out.grad`
+        x_bar = out.grad.reshape(-1, 1) if out.grad.ndim == 1 else out.grad
+        x = out.data.reshape(-1, 1) if out.data.ndim == 1 else out.data
+
+        # Solve the adjoint system A^T w = x_bar
+        w = linalg.solve(A.data.T, x_bar)
+
+        # Compute the adjoint inputs
+        A_bar = -w @ x.T
+        b_bar = w.reshape(b.grad.shape)
+
+        # Accumulate the adjoint inputs in the gradients
+        A.grad += A_bar
+        b.grad += b_bar
+
+    out._backward = _backward
+    return out
+```
+
+#### Example 3: Matrix inversion
 
 Next up is matrix inversion: $Y = f(X) = X^{-1}$.
 This is where the adjoint machinery will start to be a lot more useful.
@@ -984,9 +1176,9 @@ def inv(X: Array):
     return out
 ```
 
-#### Lyapunov equation
+#### Example 4: Lyapunov equation
 
-Next up is the Lyapunov equation: probably the most complicated of these.
+Finally we're back to the Lyapunov equation.
 Remember that we viewed this equation as defining the solution $P \in \mathbb{n \times n}$ as an implicit function of the square matrix $A \in \mathbb{R}^{n \times n}$.
 That is, $P = f(A)$ is the solution to the Lyapunov equation
 
@@ -1093,144 +1285,6 @@ However, this is a case where a smarter implementation could be much more comput
 The Bartels-Stewart algorithm used to solve the Lyapunov equation relies on Schur decompositions of $A$ and $A^T$, which could be reused in the adjoint Lyapunov equation.
 It's always worth looking for places where computations like matrix factorizations can be reused.
 
-#### Matrix-vector product revisited
-
-We already took the simple case of a matrix-vector product where the matrix $A$ was held fixed.
-To see how the reverse-mode derivation works on a simple function with multiple inputs, let's look at the case where the matrix $A \in \mathbb{R}^{m \times n}$ is also considered an input:
-
-$$
-y = f(A, x) = A x.
-$$
-
-We derived the following forward-mode rule for the pushforward from tangent values $(\dot{A}, \dot{x})$ to $\dot{y}$:
-
-$$
-\dot{y} = A \dot{x} + \dot{A} x.
-$$
-
-To derive the pullback, we take the inner product of $\dot{y}$ with an adjoint value $w \in \mathbb{R}^m$ and then apply some basic properties of the inner product to try to isolate the tangent values $\dot{x}$ and $\dot{A}$ in the inner products:
-
-$$
-\begin{align}
-\langle w, \dot{y} \rangle &= \langle w, A \dot{x} + \dot{A} x \rangle \\
-&= \langle w, A \dot{x} \rangle + \langle w, \dot{A} x \rangle \\
-&= \langle A^T w, \dot{x} \rangle + \langle w, \dot{A} x \rangle.
-\end{align}
-$$
-
-That's almost it -- we have $\dot{y}$ and $\dot{x}$ isolated in the inner products.  What do we do about $\dot{A}$?
-Since it's a matrix, it's actually easier to work with the trace inner product for this manipulation:
-
-$$
-\begin{align}
-\langle w, \dot{A} x \rangle &= \mathrm{trace}(w x^T \dot{A}^T) \\
-&= \langle w x^T, \dot{A} \rangle.
-\end{align}
-$$
-
-Then we have it in the form we're looking for:
-
-$$
-\langle w, \dot{y} \rangle = \langle A^T w, \dot{x} \rangle + \langle w x^T, \dot{A} \rangle.
-$$
-
-Finally, we identify the factor of $\dot{y}$ (here, $w$) with the adjoint values $\bar{y}$, and the factors of $\dot{x}$ and $\dot{A}$ with the adjoint values $\bar{x}$ and $\bar{A}$:
-
-$$
-\begin{gather}
-\bar{x} = A^T \bar{y} \\
-\bar{A} = \bar{y} x^T.
-\end{gather}
-$$
-
-The pullback function will be given $\bar{y}$ and the primal values $(A, x, y)$ and will need to return the tuple of adjoint values $(\bar{A}, \bar{x})$.
-
-Here's an implementation for the "dunder" method `__matmul__` of `micrograd.Array`:
-
-```python
-class Array:
-    # [...]
-
-    def __matmul__(self, other):
-        out = Array(self.data @ other.data, (self, other), '@')
-
-        def _backward():
-            _out_grad = out.grad.reshape(-1, 1) if out.grad.ndim == 1 else out.grad
-            _self_data = self.data.reshape(-1, 1) if self.data.ndim == 1 else self.data
-            _other_data = other.data.reshape(-1, 1) if other.data.ndim == 1 else other.data
-        
-            _self_grad = _out_grad @ _other_data.T  # Y_bar @ X.T
-            _other_grad = _self_data.T @ _out_grad  # A.T @ Y_bar
-
-            self.grad += _self_grad.reshape(self.grad.shape)
-            other.grad += _other_grad.reshape(other.grad.shape)
-
-        out._backward = _backward
-
-        return out
-```
-
-#### Linear system solve
-
-The derivation for the linear system solve $x = f(A, b) = A^{-1} b$ with $A \in \mathbb{R}^{n \times n}$ works in much the same way.
-We've already derived the pushforward for tangent values $(\dot{A}, \dot{b})$ to $\dot{x}$:
-
-$$
-A \dot{x} = \dot{b} - \dot{A} x.
-$$
-
-Again we take the inner product with an arbitrary element of the output space $w \in \mathbb{R}^n$ and manipulate it to isolate the tangent values in the inner products, which will work in the same way as the previous example.
-
-$$
-\begin{align}
-\langle w, A \dot{x} \rangle &= \langle w, \dot{b} - \dot{A} x \rangle \\
-&= \langle w, \dot{b} \rangle + \langle w, - \dot{A} x \rangle \\
-\langle A^T w, \dot{x} \rangle &= \langle w, \dot{b} \rangle + \langle -w x^T, \dot{A} \rangle.
-\end{align}
-$$
-
-From this we can identify $\bar{x} = A^T w$, $\bar{b} = w$, and $\bar{A} = -w x^T $.
-Then we have the following equations determining $(\bar{A}, \bar{b})$ as a function of $\bar{x}$:
-
-$$
-\begin{gather}
-\bar{x} = A^T w \\
-\bar{A} = -w x^T \\
-\bar{b} = w.
-\end{gather}
-$$
-
-The procedure for calculating $(\bar{A}, \bar{b})$ is therefore to solve the first system of equations for $w$, and then use this result in the other equations for $\bar{A}$ and $\bar{b}$ (or just do the obvious elimination of $w = \bar{b}$ first).
-Here's the code:
-
-```python
-def solve(A, b):
-    # Solve the linear system `Ax = b`` for x
-    # Both A and b are "dynamic" data, so we need to compute both their gradients.
-
-    # Forward pass: compute the solution
-    out = Array(linalg.solve(A.data, b.data), (A, b), 'solve')
-
-    # Backward pass: compute the gradients with respect to A and b
-    def _backward():
-        # The adjoint outputs will be in `out.grad`
-        x_bar = out.grad.reshape(-1, 1) if out.grad.ndim == 1 else out.grad
-        x = out.data.reshape(-1, 1) if out.data.ndim == 1 else out.data
-
-        # Solve the adjoint system A^T w = x_bar
-        w = linalg.solve(A.data.T, x_bar)
-
-        # Compute the adjoint inputs
-        A_bar = -w @ x.T
-        b_bar = w.reshape(b.grad.shape)
-
-        # Accumulate the adjoint inputs in the gradients
-        A.grad += A_bar
-        b.grad += b_bar
-
-    out._backward = _backward
-    return out
-```
 <!-- 
 #### Root finding
 
@@ -1272,9 +1326,10 @@ $$
 $$
 -->
 
-### A final example: equality-constrained quadratic program
+### Putting it all together: equality-constrained quadratic program
 
-I want to end with one last example worked end-to-end to see the full process: differentiating through an equality-constrained quadratic program (QP), defined mathematically as
+I want to end with one last example worked end-to-end to see the full process: differentiating through an optimization problem.
+Specifically we'll look at an equality-constrained quadratic program (QP), defined mathematically as
 
 $$
 \min_x \frac{1}{2} x^T Q x + c^T x, \qquad \textrm{subject to } \qquad Ax = b.
@@ -1282,8 +1337,8 @@ $$
 
 Here $x, c \in \mathbb{R}^n$ and $b \in \mathbb{R}^m$, so $Q \in \mathbb{R}^{n \times n}$ (symmetric) and $A \in \mathbb{R}^{m \times n}$.
 That is, there are $n$ "decision variables" and $m$ constraints.
-As with the root-finding and Lyapunov examples, it's easiest to view the QP solve as a function defined implicitly by its optimality conditions.
 
+As with the Lyapunov example, it's easiest to view the QP solve as a function defined implicitly by its optimality conditions.
 These can be derived from the Lagrangian of the optimization problem.
 Introducing the Lagrange multipliers $\lambda \in \mathbb{R}^m$, the Lagrangian is
 
@@ -1368,6 +1423,8 @@ A & 0
 $$
 
 Given the primals $(Q, c, A, b, x, \lambda)$ and tangent input values $(\dot{Q}, \dot{c}, \dot{A}, \dot{b})$, this tells us how to compute the tangent outputs $(\dot{x}, \dot{\lambda})$ by solving a (symmetric) linear system of equations.
+In fact, comparing the structure of the tangent problem with the original optimality conditions, we can see that this is just another quadratic program with different values for the vectors $b$ and $c$!
+Once again we can re-use our original solver code and/or matrix factorizations to compute the pushforward.
 
 The corresponding pullback could also be derived by reusing the results for the linear system solve.
 However, this case does require a little special treatment due to the symmetric structure of $M$.
@@ -1451,9 +1508,9 @@ w_x \\ w_\lambda
 \end{bmatrix}.
 $$
 
-Comparing with the optimality conditions we originally derived, we see this is just another QP!
+Comparing again with the optimality conditions we originally derived, we see this is a _third_ quadratic program!
 In fact, it has the same $Q$ and $A$ matrices, but replaces the vectors $c \rightarrow - \bar{x}$ and $b \rightarrow \bar{\lambda}$.
-As with the Lyapunov equation, this can be taken advantage of by reusing matrix factorizations.
+Once again, this can be taken advantage of by reusing matrix factorizations.
 
 From there we have everything we need to compute the adjoint inputs $(\bar{Q}, \bar{c}, \bar{A}, \bar{b})$.
 The last wrinkle is the symmetry of $\bar{Q}$.
