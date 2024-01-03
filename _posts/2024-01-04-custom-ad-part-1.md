@@ -5,11 +5,10 @@ date: 2024-01-04T05:30:30-04:00
 categories:
   - blog
 tags:
-  - python
   - automatic-differentiation
   - machine-learning
   - scientific-computing
-  - 
+  - python
 ---
 
 

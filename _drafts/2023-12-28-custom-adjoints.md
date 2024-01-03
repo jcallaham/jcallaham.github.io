@@ -9,6 +9,8 @@ tags:
   - autodiff
 ---
 
+<!-- NOTE: This was the full draft - since been split into multiple parts. -->
+
 If you're working heavily with an automatic differentiation system like PyTorch, JAX, or Flux.jl, a lot of the time you don't have to think too much about how the magic happens. But every so often you might find yourself doing something that the framework doesn't know how to differentiate properly. It's also common that a custom autodiff "rule" will be more efficient when a function output is the result of an algorithm: matrix inversion, linear system solving, root-finding, etc.
 
 The documentation for autodiff frameworks usually shows some way of implementing these kinds of custom "rules" (see for example the relevant pages for [PyTorch](https://pytorch.org/tutorials/beginner/examples_autograd/two_layer_net_custom_function.html), [JAX](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html), and [Zygote.jl](https://fluxml.ai/Zygote.jl/dev/adjoints/)), but these pages typically don't go into depth about how to derive them. And while there are some great resources for learning about how AD works in general, they usually stop short of explanations for what to do in these oddball cases. The goal of this post is to write the tutorial I was looking for when I first ran into this.
