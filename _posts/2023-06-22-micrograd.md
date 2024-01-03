@@ -20,7 +20,7 @@ I decided to write this up as a separate post because I thought that it sheds a 
 
 I'm not going to derive "backprop" or reverse-mode AD from scratch here; if you haven't seen the [video](https://youtu.be/VMj-3S1tku0) or looked through the [code](https://github.com/karpathy/micrograd), I highly recommend it.  [Here's](https://thenumb.at/Autodiff/) another great intro blog post on automatic differentiation.  For background on the JAX functional interface, check out the "[autodiff cookbook](https://jax.readthedocs.io/en/latest/notebooks/autodiff_cookbook.html#how-it-s-made-two-foundational-autodiff-functions)" page of their documentation.
 
-The code is available on [my fork](https://github.com/jcallaham/micrograd) of micrograd (which currently doesn't have the `nn` module, but I'll add that back when I have time).
+The code is available on [my fork](https://github.com/jcallaham/micrograd/tree/v0.1) of micrograd (which currently doesn't have the `nn` module, but I'll add that back when I have time).
 
 ### What is micrograd and why am I using it?
 
@@ -178,7 +178,7 @@ J(\mathbf{x}_0) = \left.  \frac{dy}{dx}\right|_{\mathbf{x}=\mathbf{x}_0}
 \end{bmatrix} \right|_{\mathbf{x}=\mathbf{x}_0}
 $$
 
-If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass (but we'll see what it's _really_ doing in a minute).  On the other hand, forward-mode AD can be seen as computing a column of the Jacobian in each pass.
+If the output is a scalar, then $J(\mathbf{x}_0) = \nabla f(\mathbf{x}_0)^T$: the first row of the Jacobian is the gradient.  With this in mind, reverse-mode AD can be viewed as computing a row of the Jacobian in each pass (but we'll see what it's really doing in a minute).  On the other hand, forward-mode AD can be seen as computing a column of the Jacobian in each pass.
 
 As a simple example, let's say $\mathbf{f}$ is a vector-valued function given by
 
