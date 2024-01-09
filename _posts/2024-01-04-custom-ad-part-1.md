@@ -30,7 +30,7 @@ You could also read this first and then go check out their documentation.
 Here's what this series will cover:
 
 * **Part 1:** Autodiff basics: forward- and reverse-mode
-* **Part 2:** Linear maps and adjoints
+* [**Part 2:**]({% link _posts/2024-01-11-custom-ad-part-2.md %}) Linear maps and adjoints
 * **Part 3:** Deriving forward-mode AD rules (w/ examples)
 * **Part 4:** Deriving reverse-mode AD rules (w/ examples)
 * **Part 5:** Putting it all together: differentiating constrained optimization
@@ -257,5 +257,5 @@ f.defvjp(f_fwd, f_bwd)
 ### Looking ahead
 
 In this post we covered some of the basic concepts of automatic differentiation applied to functions with vector inputs and outputs.
-This is laying some groundwork for the next part of the series, where we'll see how to generalize the Jacobian, JVP, and VJP to functions that operate on all kinds of different inputs.
+This is laying some groundwork for [Part 2]({% link _posts/2024-01-11-custom-ad-part-2.md %}), where we'll see how to generalize the Jacobian, JVP, and VJP to functions that operate on all kinds of different inputs.
 That part will be a little math-heavy, but then we will be able to fully understand the process of deriving custom autodiff rules. 
