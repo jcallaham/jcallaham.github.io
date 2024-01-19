@@ -1,6 +1,6 @@
 ---
 layout: post
-title: "Custom autodiff part 2: linear maps and adjoints"
+title: "Custom autodiff part 2: linear maps"
 date: 2024-01-11T05:30:30-04:00
 categories:
   - blog
@@ -14,13 +14,13 @@ tags:
 This post is Part 2 in a series on how to derive custom rules for differentiating through functions in autodiff frameworks like PyTorch, JAX, or Flux.
 In [Part 1]({% link _posts/2024-01-04-custom-ad-part-1.md %}) we went over the basic idea of automatic differentiation as applied to functions with a single vector-valued input and output.
 This time we'll take a step back and go over some relatively abstract math that will actually turn out to be the key to deriving our autodiff rules.
-In Part 3 we'll actually get started on some examples.
+In [Part 3]({% link _posts/2024-01-18-custom-ad-part-3.md %}) we'll actually get started on some examples.
 
 As a reminder, here's the outline of this series:
 
 * [**Part 1:**]({% link _posts/2024-01-04-custom-ad-part-1.md %}) Autodiff basics: forward- and reverse-mode
 * **Part 2:** Linear maps and adjoints
-* **Part 3:** Deriving forward-mode AD rules (w/ examples)
+* [**Part 3:**]({% link _posts/2024-01-18-custom-ad-part-3.md %}) Deriving forward-mode AD rules (w/ examples)
 * **Part 4:** Deriving reverse-mode AD rules (w/ examples)
 * **Part 5:** Putting it all together: differentiating constrained optimization
 
