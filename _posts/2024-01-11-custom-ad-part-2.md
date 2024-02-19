@@ -22,7 +22,7 @@ As a reminder, here's the outline of this series:
 * **Part 2:** Linear maps and adjoints
 * [**Part 3:**]({% link _posts/2024-01-18-custom-ad-part-3.md %}) Deriving forward-mode AD rules (w/ examples)
 * [**Part 4:**]({% link _posts/2024-01-25-custom-ad-part-4.md %}) Deriving reverse-mode AD rules (w/ examples)
-* **Part 5:** Putting it all together: differentiating constrained optimization
+* [**Part 5:**]({% link _posts/2024-02-01-custom-ad-part-5.md %}) Putting it all together: differentiating constrained optimization
 
 As we've seen, a "pass" through an autodiff framework is basically made up of a sequence of linear operations, even when the function being differentiated is nonlinear.
 There's nothing magic about that; differentiation is linear, the chain rule is linear, and automatic differentiation is really just an algorithm for computing the chain rule.

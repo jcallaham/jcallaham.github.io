@@ -33,7 +33,7 @@ Here's what this series will cover:
 * [**Part 2:**]({% link _posts/2024-01-11-custom-ad-part-2.md %}) Linear maps and adjoints
 * [**Part 3:**]({% link _posts/2024-01-18-custom-ad-part-3.md %}) Deriving forward-mode AD rules (w/ examples)
 * [**Part 4:**]({% link _posts/2024-01-25-custom-ad-part-4.md %}) Deriving reverse-mode AD rules (w/ examples)
-* **Part 5:** Putting it all together: differentiating constrained optimization
+* [**Part 5:**]({% link _posts/2024-02-01-custom-ad-part-5.md %}) Putting it all together: differentiating constrained optimization
 
 Let's get to it!
 
