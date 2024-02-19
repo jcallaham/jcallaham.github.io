@@ -22,7 +22,7 @@ As a reminder, here's the outline of this series:
 * [**Part 2:**]({% link _posts/2024-01-11-custom-ad-part-2.md %}) Linear maps and adjoints
 * **Part 3:** Deriving forward-mode AD rules (w/ examples)
 * [**Part 4:**]({% link _posts/2024-01-25-custom-ad-part-4.md %}) Deriving reverse-mode AD rules (w/ examples)
-* **Part 5:** Putting it all together: differentiating constrained optimization
+* [**Part 5:**]({% link _posts/2024-02-01-custom-ad-part-5.md %}) Putting it all together: differentiating constrained optimization
 
 In the rest of this series, I'm using a [fork of the micrograd autodiff engine](https://github.com/jcallaham/micrograd) to demonstrate how to implement these rules in code.
 However, since that doesn't support forward mode AD, I can't code up these examples in that framework.

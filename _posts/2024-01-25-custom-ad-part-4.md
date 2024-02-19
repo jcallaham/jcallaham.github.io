@@ -24,7 +24,7 @@ As a reminder, here's the outline of this series:
 * [**Part 2:**]({% link _posts/2024-01-11-custom-ad-part-2.md %}) Linear maps and adjoints
 * [**Part 3:**]({% link _posts/2024-01-18-custom-ad-part-3.md %}) Deriving forward-mode AD rules (w/ examples)
 * **Part 4:** Deriving reverse-mode AD rules (w/ examples)
-* **Part 5:** Putting it all together: differentiating constrained optimization
+* [**Part 5:**]({% link _posts/2024-02-01-custom-ad-part-5.md %}) Putting it all together: differentiating constrained optimization
 
 We've already covered how to work with tangent linear maps and their adjoints (in part 2), as well as how to derive the tangent linear map, or pushforward (in part 3).
 This time around we'll be deriving the pullback for reverse-mode autodiff, which will combine what we did for forward-mode with some manipulations related to adjoint maps.
