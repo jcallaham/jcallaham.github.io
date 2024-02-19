@@ -15,7 +15,7 @@ tags:
 This post is Part 4 in a series on how to derive custom rules for differentiating through functions in autodiff frameworks like PyTorch, JAX, or Flux.
 In [Part 1]({% link _posts/2024-01-04-custom-ad-part-1.md %}) we went over the basic idea of automatic differentiation as applied to functions with a single vector-valued input and output.
 In [Part 2]({% link _posts/2024-01-11-custom-ad-part-2.md %}) we took a step back to go over linear maps, their adjoints, and how this relates to automatic differentiation.
-In [Part 3]({% link _posts/2024-01-25-custom-ad-part-3.md %}) we learned how to derive custom rules for forward mode automatic differentiation, and then walked through a number of examples of doing so.
+In [Part 3]({% link _posts/2024-01-18-custom-ad-part-3.md %}) we learned how to derive custom rules for forward mode automatic differentiation, and then walked through a number of examples of doing so.
 This time, we'll get into reverse-mode autodiff rules and revisit the same set of examples from last time.
 
 As a reminder, here's the outline of this series:
