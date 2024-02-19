@@ -21,7 +21,7 @@ As a reminder, here's the outline of this series:
 * [**Part 1:**]({% link _posts/2024-01-04-custom-ad-part-1.md %}) Autodiff basics: forward- and reverse-mode
 * **Part 2:** Linear maps and adjoints
 * [**Part 3:**]({% link _posts/2024-01-18-custom-ad-part-3.md %}) Deriving forward-mode AD rules (w/ examples)
-* **Part 4:** Deriving reverse-mode AD rules (w/ examples)
+* [**Part 4:**]({% link _posts/2024-01-25-custom-ad-part-4.md %}) Deriving reverse-mode AD rules (w/ examples)
 * **Part 5:** Putting it all together: differentiating constrained optimization
 
 As we've seen, a "pass" through an autodiff framework is basically made up of a sequence of linear operations, even when the function being differentiated is nonlinear.
