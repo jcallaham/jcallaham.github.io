@@ -52,14 +52,9 @@ By its nature, cardboard is pretty unforgiving.
 The corrugation adds some stiffness in one dimension, but not the other.
 
 In either direction, if you look at it wrong it will crease and then never be stiff again.
-When I was done I gave it to my daughter, and after about 20 min she put it in the Baby Bjorn because "he needed to take a nap".
+My daughter was playing with him and put him in the Baby Bjorn because "he needed to take a nap".
 His foot got stuck, the leg bent, and he's never been able to walk unassisted since.
-
-On the other hand, cardboard is something you probably have in your recycle bin, so there's that.
-But if I was ever to try rebuilding again, I'd probably go with something like MDF.
-
-![v2 (assembled)](/assets/images/cardboard-robot/v2_assembled.jpg){: width="250" }
-![v2 (final)](/assets/images/cardboard-robot/v2_final.jpg){: width="250" }
+I'm just glad she had fun with it, but if I was ever to try rebuilding again I'd probably go with something like MDF.
 
 The other trouble I had with materials was the popsicle sticks for the offsets on the axles.
 I found it was kind of tricky to keep everything square when gluing those up, so I ended up cutting pieces off a paint-stirring stick like you get for free from Home Depot with a gallon of paint.
@@ -82,5 +77,8 @@ With this list it's all less than $50, and you can probably come up with cheaper
 - Paint stick
 - Hot glue gun
 - Finger paint, stick-on jewels, and googly eyes (optional, but recommended)
+
+![v2 (assembled)](/assets/images/cardboard-robot/v2_assembled.jpg){: width="250" }
+![v2 (final)](/assets/images/cardboard-robot/v2_final.jpg){: width="250" }
 
 Good luck!
