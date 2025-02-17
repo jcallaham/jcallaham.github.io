@@ -96,7 +96,7 @@ $$
 $$
 
 We know that $w^T A = (A^T w)^T$, so we could also write this as $(A^T w)^T \dot{x}$.
-But notice that this is the inner product between the vectors $v$ and $A^T w$, so we could rewrite the inner product as
+But notice that this is the inner product between the vectors $\dot{x}$ and $A^T w$, so we could rewrite the inner product as
 
 $$
 \langle w, \dot{y} \rangle = \langle w, A \dot{x} \rangle = \langle A^T w, \dot{x} \rangle.
@@ -137,7 +137,9 @@ $$
 
 Again, we know from the basic definitions of the adjoint, pushforward, and pullback that $ \langle \bar{y}, \dot{y} \rangle = \langle \bar{x}, \dot{x} \rangle $.
 What we need to do is manipulate this equation into that form.
-Since $w$ is an _arbitrary_ element of the output space, we can do that by choosing $w$ to be the solution to the linear system $f(x, y)^T w = -\bar{y}$, for the specific $\bar{y}$ handed to us by the autodiff system.
+Since $w$ is an _arbitrary_ element of the output space, we can do that by choosing $w$ to be the solution to the linear system $\partial_y f(x, y)^T w = -\bar{y}$, for the specific $\bar{y}$ handed to us by the autodiff system.
+Is this the same thing as inverting the Jacobian $\partial_y f$?  Formally yes, but as we will see in the examples, sometimes breaking this into a separate calculation will lead to more straightforward implementations.
+
 Then we have
 
 $$
